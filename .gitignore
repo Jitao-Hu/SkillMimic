@@ -13,6 +13,8 @@ skillmimic/data/cfg/train/rlg/*
 !skillmimic/data/cfg/train/rlg/hrl_humanoid_discrete_*.yaml
 skillmimic/data/cfg/train/rlg/hrl_humanoid_discrete_llcs.yaml
 
+!skillmimic/data/cfg/hrl_dual_humanoid.yaml
+!skillmimic/data/cfg/train/rlg/hrl_dual_humanoid.yaml
 
 /output/*
 /runs

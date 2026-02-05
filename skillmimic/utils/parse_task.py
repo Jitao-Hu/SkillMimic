@@ -28,10 +28,12 @@
 
 from env.tasks.vec_task_wrappers import VecTaskPythonWrapper
 from env.tasks.skillmimic import SkillMimicBallPlay
+from env.tasks.skillmimic_dual import SkillMimicDualHumanoid
 from env.tasks.hrl_circling import HRLCircling
 from env.tasks.hrl_heading_easy import HRLHeadingEasy
 from env.tasks.hrl_throwing import HRLThrowing
 from env.tasks.hrl_scoring_layup import HRLScoringLayup
+from env.tasks.hrl_dual_humanoid import HRLDualHumanoid
 
 from isaacgym import rlgpu
 

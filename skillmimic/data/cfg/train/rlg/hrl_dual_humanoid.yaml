@@ -1,0 +1,83 @@
+params:
+  seed: -1
+
+  algo:
+    name: hrl_dual
+
+  model:
+    name: hrl_discrete  # Uses same model as hrl_discrete
+
+  network:
+    name: hrl
+    separate: True
+
+    space:
+      discrete:
+        actions_num: 6  # 3 skills per humanoid x 2 humanoids, but HLC outputs 1 action
+        logit_init:
+          name: glorot_uniform_initializer 
+          gain: 1.0
+
+    mlp:
+      units: [1024, 512]
+      activation: relu
+      d2rl: False
+
+      initializer:
+        name: default
+      regularizer:
+        name: None
+  
+  load_checkpoint: False
+
+  config:
+    name: SkillMimicDualHRL
+    env_name: rlgpu
+    multi_gpu: False
+    ppo: True
+    mixed_precision: False
+    normalize_input: True
+    normalize_value: True
+    reward_shaper:
+      scale_value: 1
+    normalize_advantage: True
+    gamma: 0.99
+    tau: 0.95
+    learning_rate: 2e-5
+    lr_schedule: constant
+    score_to_win: 20000
+    max_epochs: 3000
+    save_best_after: 10
+    save_frequency: 50
+    print_stats: True
+    grad_norm: 1.0
+    entropy_coef: 0.01  # Encourage exploration
+    truncate_grads: False
+    ppo: True
+    e_clip: 0.2
+    horizon_length: 32
+    minibatch_size: 512  # Must divide batch_size (num_envs * horizon_length)
+    mini_epochs: 6
+    critic_coef: 5
+    clip_value: False
+    seq_len: 4
+    bounds_loss_coef: 10
+    
+    task_reward_w: 1.0
+    imit_reward_w: 0.0
+
+    llc_steps: 5  # LLC steps per HLC decision
+    llc_config: skillmimic/data/cfg/train/rlg/skillmimic_as_llc.yaml
+    llc_checkpoint: skillmimic/data/models/mixedskills/nn/skillmimic_llc.pth
+
+    delta_action: 0
+
+    # Skill mappings for dual humanoid
+    # Skills: pass(4), catch(3), run(13), idle(31), pick(1)
+    # Action 0-2: skills for humanoid A (pass, run, idle)
+    # Action 3-5: skills for humanoid B (catch, run, idle)
+    latent_dim: 6
+    control_mapping: [4, 13, 31, 3, 13, 31]
+    # Mapping: 0->pass, 1->run, 2->idle, 3->catch, 4->run, 5->idle
+
+    resume_from: None

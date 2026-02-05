@@ -51,7 +51,9 @@ from learning import skillmimic_network_builder
 from learning import hrl_agent_discrete #, hrl_agent, #ZC0
 from learning import hrl_players_discrete #, hrl_players, hrl_players_discrete_llcs
 from learning import hrl_models_discrete #, hrl_models, 
-from learning import hrl_network_builder 
+from learning import hrl_network_builder
+from learning import hrl_dual_agent
+from learning import hrl_dual_players 
 
 # from learning import amp_agent
 # from learning import amp_players
@@ -203,6 +205,10 @@ def build_alg_runner(algo_observer):
     # runner.model_builder.model_factory.register_builder('hrl', lambda network, **kwargs : hrl_models.ModelHRLContinuous(network))  
     runner.model_builder.model_factory.register_builder('hrl_discrete', lambda network, **kwargs : hrl_models_discrete.ModelHRLDiscrete(network))  
     runner.model_builder.network_factory.register_builder('hrl', lambda **kwargs : hrl_network_builder.HRLBuilder())
+
+    # HRL Dual Humanoid (Pass-and-Catch)
+    runner.algo_factory.register_builder('hrl_dual', lambda **kwargs : hrl_dual_agent.HRLDualAgent(**kwargs))
+    runner.player_factory.register_builder('hrl_dual', lambda **kwargs : hrl_dual_players.HRLDualPlayer(**kwargs))
 
     # runner.algo_factory.register_builder('amp', lambda **kwargs : amp_agent.AMPAgent(**kwargs))
     # runner.player_factory.register_builder('amp', lambda **kwargs : amp_players.AMPPlayerContinuous(**kwargs))
