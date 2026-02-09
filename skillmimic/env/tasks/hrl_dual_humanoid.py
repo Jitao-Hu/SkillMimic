@@ -162,12 +162,17 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
         - Ball successfully passed (A releases, moves toward B)
         - Ball successfully caught (B catches)
         - Both humanoids standing
+        - NEW: Standing posture rewards
+        - NEW: Upright body orientation rewards
+        - NEW: Ground contact penalties
         """
         ball_pos = self._target_states[:, 0:3]
         ball_vel = self._target_states[:, 7:10]
         
         root_pos_a = self._humanoid_root_states[:, 0:3]
+        root_rot_a = self._humanoid_root_states[:, 3:7]
         root_pos_b = self._humanoid_b_root_states[:, 0:3]
+        root_rot_b = self._humanoid_b_root_states[:, 3:7]
         
         height_a = self._rigid_body_pos[:, 0, 2]
         height_b = self._rigid_body_pos_b[:, 0, 2]
@@ -176,6 +181,8 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
         dist_ball_to_hand_b = self._get_closest_hand_distance(ball_pos, 'b')
         
         ball_contact_force = self._tar_contact_forces
+        contact_forces_a = self._contact_forces
+        contact_forces_b = self._contact_forces_b
         
         # Use the cooperative reward function from parent
         from env.tasks.skillmimic_dual import compute_coop_reward
@@ -183,14 +190,20 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
         self.rew_buf[:] = compute_coop_reward(
             ball_pos, ball_vel,
             root_pos_a, root_pos_b,
+            root_rot_a, root_rot_b,
             height_a, height_b,
             dist_ball_to_hand_a, dist_ball_to_hand_b,
             ball_contact_force,
+            contact_forces_a, contact_forces_b,
+            self._non_foot_body_ids,
             self._reward_w_alive,
             self._reward_w_ball_to_hand,
             self._reward_w_pass_direction,
             self._reward_w_catch_success,
             self._reward_w_ball_height,
+            self._reward_w_standing,
+            self._reward_w_upright,
+            self._reward_w_ground_contact_penalty,
             self._termination_heights
         )
         return

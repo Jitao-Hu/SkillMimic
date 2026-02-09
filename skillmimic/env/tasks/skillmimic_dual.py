@@ -38,10 +38,22 @@ OTHER_HUMANOID_OBS_SIZE = 15
 DEFAULT_COOP_REWARD_WEIGHTS = {
     "alive": 0.1,
     "ball_to_hand": 2.0,
-    "pass_direction": 1.0,
+    "pass_direction": 5.0,      # Increased from 1.0 for better pass targeting
     "catch_success": 10.0,
     "ball_height": 0.5,
+    "standing": 2.0,            # NEW: CoM height reward
+    "upright": 1.5,             # NEW: Body verticality reward
+    "ground_contact_penalty": -5.0,  # NEW: Penalty for non-foot ground contact
 }
+
+# Minimum standing height for rewards (meters)
+MIN_STANDING_HEIGHT = 0.8
+
+# Body indices that should NOT touch ground (will be set from asset)
+# Typical non-foot bodies: head, torso, hands, knees
+NON_FOOT_BODY_NAMES = ["Head", "Pelvis", "Spine", "Spine1", "Spine2", 
+                        "L_Hand", "R_Hand", "L_Forearm", "R_Forearm",
+                        "L_Knee", "R_Knee"]
 
 
 class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
@@ -396,6 +408,12 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
         self._reward_w_pass_direction = coop_weights.get("pass_direction", DEFAULT_COOP_REWARD_WEIGHTS["pass_direction"])
         self._reward_w_catch_success = coop_weights.get("catch_success", DEFAULT_COOP_REWARD_WEIGHTS["catch_success"])
         self._reward_w_ball_height = coop_weights.get("ball_height", DEFAULT_COOP_REWARD_WEIGHTS["ball_height"])
+        self._reward_w_standing = coop_weights.get("standing", DEFAULT_COOP_REWARD_WEIGHTS["standing"])
+        self._reward_w_upright = coop_weights.get("upright", DEFAULT_COOP_REWARD_WEIGHTS["upright"])
+        self._reward_w_ground_contact_penalty = coop_weights.get("ground_contact_penalty", DEFAULT_COOP_REWARD_WEIGHTS["ground_contact_penalty"])
+        
+        # Build non-foot body indices for ground contact detection
+        self._build_non_foot_body_ids()
         
         print(f"[SkillMimicDualHumanoid] Cooperative reward weights:")
         print(f"  - alive: {self._reward_w_alive}")
@@ -403,6 +421,23 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
         print(f"  - pass_direction: {self._reward_w_pass_direction}")
         print(f"  - catch_success: {self._reward_w_catch_success}")
         print(f"  - ball_height: {self._reward_w_ball_height}")
+        print(f"  - standing: {self._reward_w_standing}")
+        print(f"  - upright: {self._reward_w_upright}")
+        print(f"  - ground_contact_penalty: {self._reward_w_ground_contact_penalty}")
+    
+    def _build_non_foot_body_ids(self):
+        """Build list of body indices that should not touch ground (non-foot bodies)."""
+        non_foot_ids = []
+        env_ptr = self.envs[0]
+        actor_handle = self.humanoid_handles[0]
+        
+        for body_name in NON_FOOT_BODY_NAMES:
+            body_id = self.gym.find_actor_rigid_body_handle(env_ptr, actor_handle, body_name)
+            if body_id != -1:
+                non_foot_ids.append(body_id)
+        
+        self._non_foot_body_ids = torch.tensor(non_foot_ids, device=self.device, dtype=torch.long)
+        print(f"[SkillMimicDualHumanoid] Non-foot body IDs for ground contact detection: {self._non_foot_body_ids.tolist()}")
 
     def _build_target_tensors(self):
         """
@@ -507,14 +542,39 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
         return
 
     def _reset_humanoid_b(self, env_ids):
-        """Reset humanoid B to initial state (offset from humanoid A)."""
-        # Position humanoid B offset from humanoid A
-        self._humanoid_b_root_states[env_ids, 0] = self.init_root_pos[env_ids, 0] + self._humanoid_b_spacing
-        self._humanoid_b_root_states[env_ids, 1] = self.init_root_pos[env_ids, 1]
+        """
+        Reset humanoid B in front of humanoid A, facing A.
+        
+        This ensures that:
+        1. B is always in A's forward direction (based on A's heading from motion data)
+        2. B faces A (180 degrees from A's heading)
+        
+        This way, when A performs a "pass" skill (which passes forward in motion data),
+        the ball will fly toward B, and B is ready to catch it.
+        """
+        num_reset = env_ids.shape[0]
+        
+        # Get A's heading angle from motion data rotation
+        root_rot_a = self.init_root_rot[env_ids]
+        heading_a = torch_utils.calc_heading(root_rot_a)  # [N] heading angle in radians
+        
+        # B's position = A's position + A's forward direction × spacing
+        # Forward direction: (cos(heading), sin(heading), 0)
+        offset_x = torch.cos(heading_a) * self._humanoid_b_spacing
+        offset_y = torch.sin(heading_a) * self._humanoid_b_spacing
+        
+        self._humanoid_b_root_states[env_ids, 0] = self.init_root_pos[env_ids, 0] + offset_x
+        self._humanoid_b_root_states[env_ids, 1] = self.init_root_pos[env_ids, 1] + offset_y
         self._humanoid_b_root_states[env_ids, 2] = self.init_root_pos[env_ids, 2]
         
-        # Face opposite direction (180 degree rotation around Z)
-        self._humanoid_b_root_states[env_ids, 3:7] = torch.tensor([0.0, 0.0, 1.0, 0.0], device=self.device)
+        # B's heading = A's heading + 180° (face toward A)
+        heading_b = heading_a + np.pi
+        
+        # Convert heading angle to quaternion (rotation around Z axis)
+        axis = torch.zeros((num_reset, 3), device=self.device)
+        axis[:, 2] = 1.0  # Z axis
+        rot_b = quat_from_angle_axis(heading_b, axis)
+        self._humanoid_b_root_states[env_ids, 3:7] = rot_b
         
         # Zero velocities
         self._humanoid_b_root_states[env_ids, 7:13] = 0.0
@@ -736,17 +796,22 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
         Reward components:
         1. alive: Basic survival reward for both humanoids standing
         2. ball_to_hand: Reward for catcher's hands approaching the ball
-        3. pass_direction: Reward for ball velocity pointing toward catcher
-        4. catch_success: Bonus when ball contacts catcher's hand
+        3. pass_direction: Reward for ball velocity pointing toward catcher (enhanced)
+        4. catch_success: Bonus when ball contacts catcher's hand (conditional on standing)
         5. ball_height: Reward for ball at catchable height
+        6. standing: NEW - CoM height reward for maintaining standing posture
+        7. upright: NEW - Body verticality reward
+        8. ground_contact_penalty: NEW - Penalty for non-foot body parts touching ground
         """
         # Get ball state
         ball_pos = self._target_states[:, 0:3]
         ball_vel = self._target_states[:, 7:10]
         
-        # Get humanoid positions
+        # Get humanoid positions and rotations
         root_pos_a = self._humanoid_root_states[:, 0:3]
+        root_rot_a = self._humanoid_root_states[:, 3:7]
         root_pos_b = self._humanoid_b_root_states[:, 0:3]
+        root_rot_b = self._humanoid_b_root_states[:, 3:7]
         
         # Get humanoid heights for alive check
         height_a = self._rigid_body_pos[:, 0, 2]  # Root body Z position
@@ -759,32 +824,48 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
         dist_ball_to_hand_a = self._get_closest_hand_distance(ball_pos, 'a')
         dist_ball_to_hand_b = self._get_closest_hand_distance(ball_pos, 'b')
         
+        # Get contact forces for non-foot body ground contact detection
+        contact_forces_a = self._contact_forces
+        contact_forces_b = self._contact_forces_b
+        
         # Compute reward using JIT function
         self.rew_buf[:] = compute_coop_reward(
             ball_pos, ball_vel,
             root_pos_a, root_pos_b,
+            root_rot_a, root_rot_b,
             height_a, height_b,
             dist_ball_to_hand_a, dist_ball_to_hand_b,
             ball_contact_force,
+            contact_forces_a, contact_forces_b,
+            self._non_foot_body_ids,
             self._reward_w_alive,
             self._reward_w_ball_to_hand,
             self._reward_w_pass_direction,
             self._reward_w_catch_success,
             self._reward_w_ball_height,
+            self._reward_w_standing,
+            self._reward_w_upright,
+            self._reward_w_ground_contact_penalty,
             self._termination_heights
         )
         return
 
     def _compute_reset(self):
         """
-        Compute reset conditions based on humanoid A height.
-        Can be extended to check both humanoids.
+        Compute reset conditions for dual humanoid environment.
+        
+        Termination conditions:
+        1. Either humanoid falls below termination height
+        2. NEW: Non-foot body parts touch the ground (head, torso, hands, etc.)
         """
         self.reset_buf[:], self._terminate_buf[:] = compute_dual_humanoid_reset(
             self.reset_buf, 
             self.progress_buf,
             self._rigid_body_pos, 
             self._rigid_body_pos_b,
+            self._contact_forces,
+            self._contact_forces_b,
+            self._non_foot_body_ids,
             self.max_episode_length,
             self._enable_early_termination, 
             self._termination_heights
@@ -921,15 +1002,30 @@ def compute_other_humanoid_obs(self_pos, self_rot, self_vel, self_ang_vel,
 
 @torch.jit.script
 def compute_dual_humanoid_reset(reset_buf, progress_buf, rigid_body_pos_a, rigid_body_pos_b,
+                                 contact_forces_a, contact_forces_b, non_foot_body_ids,
                                  max_episode_length, enable_early_termination, termination_heights):
-    # type: (Tensor, Tensor, Tensor, Tensor, int, bool, Tensor) -> Tuple[Tensor, Tensor]
+    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, int, bool, Tensor) -> Tuple[Tensor, Tensor]
     """
     Compute reset conditions for dual humanoid environment.
-    Resets if either humanoid falls below termination height.
+    
+    Termination conditions:
+    1. Either humanoid falls below termination height
+    2. Non-foot body parts touch the ground (significant contact force)
+    
+    Args:
+        reset_buf: Current reset buffer
+        progress_buf: Episode progress counter
+        rigid_body_pos_a/b: Body positions for humanoid A/B [N, num_bodies, 3]
+        contact_forces_a/b: Contact forces for humanoid A/B [N, num_bodies, 3]
+        non_foot_body_ids: Indices of body parts that should not touch ground
+        max_episode_length: Maximum episode length
+        enable_early_termination: Whether to enable early termination
+        termination_heights: Height threshold for falling
     """
     terminated = torch.zeros_like(reset_buf)
 
     if enable_early_termination:
+        # =========== 1. Height Check ===========
         # Check humanoid A height (root body)
         body_height_a = rigid_body_pos_a[:, 0, 2]
         body_fall_a = body_height_a < termination_heights
@@ -938,9 +1034,27 @@ def compute_dual_humanoid_reset(reset_buf, progress_buf, rigid_body_pos_a, rigid
         body_height_b = rigid_body_pos_b[:, 0, 2]
         body_fall_b = body_height_b < termination_heights
         
-        # Either humanoid falling triggers termination
-        has_failed = (body_fall_a | body_fall_b).clone()
-        has_failed *= (progress_buf > 1)
+        # =========== 2. Non-Foot Ground Contact Check ===========
+        # Check if any non-foot body part has significant ground contact
+        # Contact force threshold: 50N (indicates significant ground contact)
+        contact_threshold = 50.0
+        
+        # Get contact forces for non-foot bodies
+        non_foot_contact_a = contact_forces_a[:, non_foot_body_ids, :]  # [N, num_non_foot, 3]
+        non_foot_contact_b = contact_forces_b[:, non_foot_body_ids, :]
+        
+        # Check for significant contact (force magnitude > threshold)
+        contact_magnitude_a = torch.norm(non_foot_contact_a, dim=-1)  # [N, num_non_foot]
+        contact_magnitude_b = torch.norm(non_foot_contact_b, dim=-1)
+        
+        # Any non-foot body with significant contact triggers termination
+        ground_contact_a = torch.any(contact_magnitude_a > contact_threshold, dim=-1)
+        ground_contact_b = torch.any(contact_magnitude_b > contact_threshold, dim=-1)
+        
+        # =========== Combine Termination Conditions ===========
+        # Either falling OR non-foot ground contact triggers termination
+        has_failed = (body_fall_a | body_fall_b | ground_contact_a | ground_contact_b).clone()
+        has_failed *= (progress_buf > 1)  # Don't terminate on first step
         
         terminated = torch.where(has_failed, torch.ones_like(reset_buf), terminated)
 
@@ -952,33 +1066,40 @@ def compute_dual_humanoid_reset(reset_buf, progress_buf, rigid_body_pos_a, rigid
 @torch.jit.script
 def compute_coop_reward(ball_pos, ball_vel,
                         root_pos_a, root_pos_b,
+                        root_rot_a, root_rot_b,
                         height_a, height_b,
                         dist_ball_to_hand_a, dist_ball_to_hand_b,
                         ball_contact_force,
+                        contact_forces_a, contact_forces_b,
+                        non_foot_body_ids,
                         w_alive, w_ball_to_hand, w_pass_direction,
                         w_catch_success, w_ball_height,
+                        w_standing, w_upright, w_ground_contact_penalty,
                         termination_heights):
-    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, float, float, float, float, float, Tensor) -> Tensor
+    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, float, float, float, float, float, float, float, float, Tensor) -> Tensor
     """
-    Compute cooperative pass-and-catch reward.
+    Compute cooperative pass-and-catch reward with posture constraints.
     
     Reward components:
     1. alive: Both humanoids standing upright
     2. ball_to_hand: Catcher's hands approaching the ball
-    3. pass_direction: Ball velocity pointing toward catcher
-    4. catch_success: Ball contacted by catcher's hand
+    3. pass_direction: Ball velocity pointing toward catcher (ENHANCED with squared alignment)
+    4. catch_success: Ball contacted by catcher's hand (CONDITIONAL on standing)
     5. ball_height: Ball at catchable height (0.5m - 1.5m)
+    6. standing: NEW - CoM height reward for maintaining standing posture
+    7. upright: NEW - Body verticality reward (penalize lying down)
+    8. ground_contact_penalty: NEW - Penalty for non-foot ground contact
     
     Args:
         ball_pos: Ball position [N, 3]
         ball_vel: Ball velocity [N, 3]
-        root_pos_a: Humanoid A root position [N, 3]
-        root_pos_b: Humanoid B root position [N, 3]
-        height_a: Humanoid A height [N]
-        height_b: Humanoid B height [N]
-        dist_ball_to_hand_a: Distance from ball to A's closest hand [N]
-        dist_ball_to_hand_b: Distance from ball to B's closest hand [N]
+        root_pos_a/b: Humanoid root position [N, 3]
+        root_rot_a/b: Humanoid root rotation quaternion [N, 4]
+        height_a/b: Humanoid height [N]
+        dist_ball_to_hand_a/b: Distance from ball to closest hand [N]
         ball_contact_force: Contact force on ball [N, 3]
+        contact_forces_a/b: Contact forces on humanoid bodies [N, num_bodies, 3]
+        non_foot_body_ids: Indices of non-foot bodies [num_non_foot]
         w_*: Reward weights
         termination_heights: Height threshold for falling [N]
         
@@ -987,6 +1108,9 @@ def compute_coop_reward(ball_pos, ball_vel,
     """
     num_envs = ball_pos.shape[0]
     device = ball_pos.device
+    
+    # Minimum standing height constant
+    MIN_STANDING_HEIGHT = 0.8
     
     reward = torch.zeros(num_envs, device=device, dtype=torch.float32)
     
@@ -997,22 +1121,18 @@ def compute_coop_reward(ball_pos, ball_vel,
     r_alive = alive_a * alive_b * w_alive
     
     # =========== 2. Ball to Hand Reward ===========
-    # Encourage catcher's hand to approach the ball
-    # Use exponential decay based on distance
-    # For now, assume B is the catcher (ball closer to B means better)
     ball_to_a = torch.norm(ball_pos - root_pos_a, dim=-1)
     ball_to_b = torch.norm(ball_pos - root_pos_b, dim=-1)
     
     # Determine who is closer to ball (passer vs catcher)
-    # If ball is closer to A, A is passer and B is catcher (and vice versa)
     b_is_catcher = (ball_to_a < ball_to_b).float()
     
     # Reward catcher's hand approaching the ball
     catcher_hand_dist = dist_ball_to_hand_b * b_is_catcher + dist_ball_to_hand_a * (1.0 - b_is_catcher)
     r_ball_to_hand = torch.exp(-2.0 * catcher_hand_dist) * w_ball_to_hand
     
-    # =========== 3. Pass Direction Reward ===========
-    # Reward when ball velocity points toward catcher
+    # =========== 3. Pass Direction Reward (ENHANCED) ===========
+    # Use SQUARED alignment for steeper reward curve
     ball_speed = torch.norm(ball_vel, dim=-1)
     
     # Direction from ball to catcher
@@ -1026,22 +1146,69 @@ def compute_coop_reward(ball_pos, ball_vel,
     # Dot product: positive if ball moving toward catcher
     alignment = torch.sum(ball_vel_norm * dir_ball_to_catcher_norm, dim=-1)
     
-    # Only reward if ball is moving fast enough and in right direction
-    r_pass_direction = torch.clamp(alignment, min=0.0) * (ball_speed > 0.5).float() * w_pass_direction
+    # ENHANCED: Use squared alignment for steeper reward curve (more reward for direct passes)
+    alignment_squared = torch.pow(torch.clamp(alignment, min=0.0), 2)
+    r_pass_direction = alignment_squared * (ball_speed > 0.5).float() * w_pass_direction
     
-    # =========== 4. Catch Success Reward ===========
-    # Bonus when ball has contact and is close to catcher's hand
+    # =========== 4. Catch Success Reward (CONDITIONAL on standing) ===========
     ball_has_contact = (torch.norm(ball_contact_force, dim=-1) > 1.0).float()
     catcher_catch = (catcher_hand_dist < 0.15).float()  # Within 15cm of hand
-    r_catch_success = ball_has_contact * catcher_catch * w_catch_success
+    
+    # CONDITIONAL: Only reward catch if catcher is standing properly
+    catcher_height = height_b * b_is_catcher + height_a * (1.0 - b_is_catcher)
+    catcher_is_standing = (catcher_height > MIN_STANDING_HEIGHT).float()
+    r_catch_success = ball_has_contact * catcher_catch * catcher_is_standing * w_catch_success
     
     # =========== 5. Ball Height Reward ===========
-    # Reward ball at catchable height (0.5m to 1.5m)
     ball_height = ball_pos[:, 2]
     height_in_range = ((ball_height > 0.5) & (ball_height < 1.5)).float()
     r_ball_height = height_in_range * w_ball_height
     
+    # =========== 6. Standing Reward (NEW) ===========
+    # Reward for maintaining CoM above minimum standing height
+    standing_reward_a = torch.clamp((height_a - MIN_STANDING_HEIGHT) / 0.5, 0.0, 1.0)
+    standing_reward_b = torch.clamp((height_b - MIN_STANDING_HEIGHT) / 0.5, 0.0, 1.0)
+    r_standing = (standing_reward_a + standing_reward_b) * 0.5 * w_standing
+    
+    # =========== 7. Upright Reward (NEW) ===========
+    # Reward for body being vertical (Z-axis of body aligned with world Z)
+    # Compute body up vector from rotation quaternion
+    # For quaternion q = [x, y, z, w], rotating [0,0,1] gives body's up direction
+    # Simplified: use the Z component of rotated up vector
+    # quat_rotate formula for [0,0,1]: 
+    #   result_x = 2*(x*z + w*y)
+    #   result_y = 2*(y*z - w*x)
+    #   result_z = 1 - 2*(x*x + y*y)
+    x_a, y_a, z_a, w_a = root_rot_a[:, 0], root_rot_a[:, 1], root_rot_a[:, 2], root_rot_a[:, 3]
+    x_b, y_b, z_b, w_b = root_rot_b[:, 0], root_rot_b[:, 1], root_rot_b[:, 2], root_rot_b[:, 3]
+    
+    # Z component of body up vector (1.0 = perfectly upright, 0.0 = horizontal)
+    body_up_z_a = 1.0 - 2.0 * (x_a * x_a + y_a * y_a)
+    body_up_z_b = 1.0 - 2.0 * (x_b * x_b + y_b * y_b)
+    
+    # Clamp and reward (0 to 1 range)
+    upright_a = torch.clamp(body_up_z_a, 0.0, 1.0)
+    upright_b = torch.clamp(body_up_z_b, 0.0, 1.0)
+    r_upright = (upright_a + upright_b) * 0.5 * w_upright
+    
+    # =========== 8. Ground Contact Penalty (NEW) ===========
+    # Penalty for non-foot body parts touching ground
+    contact_threshold = 10.0  # Force threshold for detecting ground contact
+    
+    non_foot_contact_a = contact_forces_a[:, non_foot_body_ids, :]
+    non_foot_contact_b = contact_forces_b[:, non_foot_body_ids, :]
+    
+    contact_magnitude_a = torch.norm(non_foot_contact_a, dim=-1)
+    contact_magnitude_b = torch.norm(non_foot_contact_b, dim=-1)
+    
+    # Sum of contact magnitudes above threshold (normalized)
+    ground_contact_a = torch.sum(torch.clamp(contact_magnitude_a - contact_threshold, min=0.0), dim=-1) / 100.0
+    ground_contact_b = torch.sum(torch.clamp(contact_magnitude_b - contact_threshold, min=0.0), dim=-1) / 100.0
+    
+    r_ground_contact = (ground_contact_a + ground_contact_b) * w_ground_contact_penalty  # w is negative
+    
     # =========== Total Reward ===========
-    reward = r_alive + r_ball_to_hand + r_pass_direction + r_catch_success + r_ball_height
+    reward = (r_alive + r_ball_to_hand + r_pass_direction + r_catch_success + 
+              r_ball_height + r_standing + r_upright + r_ground_contact)
     
     return reward

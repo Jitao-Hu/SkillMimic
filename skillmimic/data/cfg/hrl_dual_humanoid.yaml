@@ -44,7 +44,7 @@ env:
   handBodies: ["L_Index3", "L_Middle3", "L_Pinky3", "L_Ring3", "L_Thumb3",
                "R_Index3", "R_Middle3", "R_Pinky3", "R_Ring3", "R_Thumb3"]
   terminationHeight: 0.25
-  enableEarlyTermination: False
+  enableEarlyTermination: True  # Enabled for posture constraint enforcement
 
   asset:
     assetRoot: "skillmimic/data/assets"
@@ -73,9 +73,12 @@ env:
   coopRewardWeights:
     alive: 0.1
     ball_to_hand: 2.0
-    pass_direction: 1.0
+    pass_direction: 5.0         # Increased from 1.0 for better pass targeting
     catch_success: 10.0
     ball_height: 0.5
+    standing: 2.0               # NEW: CoM height reward
+    upright: 1.5                # NEW: Body verticality reward
+    ground_contact_penalty: -5.0  # NEW: Penalty for non-foot ground contact
 
   # HRL-specific settings
   enableTaskObs: True
