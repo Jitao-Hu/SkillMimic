@@ -54,6 +54,11 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
                          device_id=device_id,
                          headless=headless)
         
+        # Buffers for LLC observations (humanoid obs + obj obs) for A and B
+        humanoid_obj_size = 823 + 15  # must match LLC expected obs (humanoid_obs + obj_obs)
+        self._llc_obs_a = torch.zeros((self.num_envs, humanoid_obj_size), device=self.device, dtype=torch.float)
+        self._llc_obs_b = torch.zeros((self.num_envs, humanoid_obj_size), device=self.device, dtype=torch.float)
+        
         self._termination_heights = torch.tensor(
             self.cfg["env"]["terminationHeight"], 
             device=self.device, dtype=torch.float
@@ -86,9 +91,21 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
         # Compute base observations (humanoid A state + ball + other humanoid)
         humanoid_a_obs = self._compute_humanoid_obs(env_ids)
         obj_obs = self._compute_obj_obs(env_ids)
-        other_obs_for_a, _ = self._compute_other_humanoid_obs(env_ids)
+        other_obs_for_a, other_obs_for_b = self._compute_other_humanoid_obs(env_ids)
+
+        # Cache LLC observations for both humanoids (humanoid_obs + obj_obs)
+        humanoid_obj_obs_a = torch.cat([humanoid_a_obs, obj_obs], dim=-1)
+        humanoid_b_obs = self._compute_humanoid_b_obs(env_ids)
+        humanoid_obj_obs_b = torch.cat([humanoid_b_obs, obj_obs], dim=-1)
+
+        if env_ids is None:
+            self._llc_obs_a[:] = humanoid_obj_obs_a
+            self._llc_obs_b[:] = humanoid_obj_obs_b
+        else:
+            self._llc_obs_a[env_ids] = humanoid_obj_obs_a
+            self._llc_obs_b[env_ids] = humanoid_obj_obs_b
         
-        # Combine observations
+        # Combine observations for HLC (A's humanoid obs + ball + other humanoid)
         obs = torch.cat([humanoid_a_obs, obj_obs, other_obs_for_a], dim=-1)
         
         # Add task observations if enabled
@@ -107,6 +124,14 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
             self.obs_buf[env_ids] = obs
 
         return
+
+    def get_llc_obs_pair(self):
+        """
+        Return LLC base observations (humanoid_obs + obj_obs) for both humanoids.
+        
+        Shape: [num_envs, 838] for each.
+        """
+        return self._llc_obs_a, self._llc_obs_b
 
     def _compute_task_obs(self, env_ids=None):
         """

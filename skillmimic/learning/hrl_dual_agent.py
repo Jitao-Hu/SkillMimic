@@ -90,23 +90,25 @@ class HRLDualAgent(HRLAgentDiscrete):
         skill_a = controlmapping[skill_idx]
         skill_b = controlmapping[num_skills_per_humanoid + skill_idx]
         
-        # Extract base observations for LLC (without task obs)
-        llc_obs = self._extract_llc_obs(obs)
+        # Extract base observations for LLC (without task obs) for BOTH humanoids
+        # Shape: [num_envs, 838] each (humanoid_obs + obj_obs)
+        llc_obs_a_base, llc_obs_b_base = self.env.task.get_llc_obs_pair()
+        llc_obs_a = llc_obs_a_base
+        llc_obs_b = llc_obs_b_base
         
         # Compute LLC action for humanoid A
-        control_signal_a = torch.zeros((batch_size, 64), device=llc_obs.device)
+        control_signal_a = torch.zeros((batch_size, 64), device=llc_obs_a.device)
         control_signal_a[torch.arange(batch_size), -64 + skill_a] = 1.0
-        llc_obs_a = torch.cat((llc_obs, control_signal_a), dim=-1)
+        llc_obs_a = torch.cat((llc_obs_a, control_signal_a), dim=-1)
         
         processed_obs_a = self._llc_agent._preproc_obs(llc_obs_a)
         mu_a, _ = self._llc_agent.model.a2c_network.eval_actor(obs=processed_obs_a)
         llc_action_a = self._llc_agent.preprocess_actions(mu_a)
         
-        # Compute LLC action for humanoid B
-        # Note: Using same observation base (could be improved with B's own observations)
-        control_signal_b = torch.zeros((batch_size, 64), device=llc_obs.device)
+        # Compute LLC action for humanoid B (using B's own observations)
+        control_signal_b = torch.zeros((batch_size, 64), device=llc_obs_b.device)
         control_signal_b[torch.arange(batch_size), -64 + skill_b] = 1.0
-        llc_obs_b = torch.cat((llc_obs, control_signal_b), dim=-1)
+        llc_obs_b = torch.cat((llc_obs_b, control_signal_b), dim=-1)
         
         processed_obs_b = self._llc_agent._preproc_obs(llc_obs_b)
         mu_b, _ = self._llc_agent.model.a2c_network.eval_actor(obs=processed_obs_b)

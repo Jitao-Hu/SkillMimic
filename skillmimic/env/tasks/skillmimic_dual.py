@@ -29,6 +29,7 @@ from utils import torch_utils
 from utils.motion_data_handler import MotionDataHandler
 
 from env.tasks.humanoid_object_task import HumanoidWholeBodyWithObject
+from env.tasks.humanoid_task import compute_humanoid_observations
 
 # Size of the other humanoid's relative state observation
 # Includes: relative_pos(3) + relative_rot(6, tan-norm) + relative_vel(3) + relative_ang_vel(3) = 15
@@ -346,6 +347,40 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
         
         return
 
+    def _compute_humanoid_b_obs(self, env_ids=None):
+        """
+        Compute full-body observations for humanoid B in the same format and
+        dimension as the single-humanoid `humanoid_obs` used by the LLC.
+        
+        This mirrors `HumanoidWholeBodyWithObject._compute_humanoid_obs`, but
+        uses humanoid B's rigid body states and contact forces instead of A's.
+        """
+        if env_ids is None:
+            body_pos = self._rigid_body_pos_b
+            body_rot = self._rigid_body_rot_b
+            body_vel = self._rigid_body_vel_b
+            body_ang_vel = self._rigid_body_ang_vel_b
+            contact_forces = self._contact_forces_b
+        else:
+            body_pos = self._rigid_body_pos_b[env_ids]
+            body_rot = self._rigid_body_rot_b[env_ids]
+            body_vel = self._rigid_body_vel_b[env_ids]
+            body_ang_vel = self._rigid_body_ang_vel_b[env_ids]
+            contact_forces = self._contact_forces_b[env_ids]
+
+        obs = compute_humanoid_observations(
+            body_pos,
+            body_rot,
+            body_vel,
+            body_ang_vel,
+            self._local_root_obs,
+            self._root_height_obs,
+            contact_forces,
+            self._contact_body_ids,
+        )
+
+        return obs
+
     def _build_hand_body_ids(self):
         """
         Build tensor of hand body IDs for ball catching detection.
@@ -543,38 +578,69 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
 
     def _reset_humanoid_b(self, env_ids):
         """
-        Reset humanoid B in front of humanoid A, facing A.
+        Reset humanoid B to the LEFT of humanoid A, facing A (side-by-side, facing each other).
         
         This ensures that:
-        1. B is always in A's forward direction (based on A's heading from motion data)
-        2. B faces A (180 degrees from A's heading)
+        1. B is always to A's LEFT side (perpendicular to A's forward direction)
+        2. B faces A (90 degrees clockwise from A's heading, so B faces right toward A)
+        3. B maintains the same upright posture as A (preserves pitch/roll from motion data)
         
-        This way, when A performs a "pass" skill (which passes forward in motion data),
-        the ball will fly toward B, and B is ready to catch it.
+        Coordinate system (Isaac Gym):
+        - X axis: forward
+        - Y axis: left
+        - Z axis: up
+        
+        If A's heading is theta (from +X axis, counterclockwise):
+        - A's forward direction: (cos(theta), sin(theta), 0)
+        - A's left direction: (-sin(theta), cos(theta), 0)
+        - B's position = A's position + A's left direction × spacing
+        - B's heading = A's heading + 90° (B faces right, toward A)
         """
         num_reset = env_ids.shape[0]
         
-        # Get A's heading angle from motion data rotation
+        # Get A's full rotation and heading from motion data
         root_rot_a = self.init_root_rot[env_ids]
         heading_a = torch_utils.calc_heading(root_rot_a)  # [N] heading angle in radians
         
-        # B's position = A's position + A's forward direction × spacing
-        # Forward direction: (cos(heading), sin(heading), 0)
-        offset_x = torch.cos(heading_a) * self._humanoid_b_spacing
-        offset_y = torch.sin(heading_a) * self._humanoid_b_spacing
+        # B's position = A's position + A's LEFT direction × spacing
+        # Left direction: (-sin(heading), cos(heading), 0) - perpendicular to forward
+        offset_x = -torch.sin(heading_a) * self._humanoid_b_spacing
+        offset_y = -torch.cos(heading_a) * self._humanoid_b_spacing
         
         self._humanoid_b_root_states[env_ids, 0] = self.init_root_pos[env_ids, 0] + offset_x
         self._humanoid_b_root_states[env_ids, 1] = self.init_root_pos[env_ids, 1] + offset_y
         self._humanoid_b_root_states[env_ids, 2] = self.init_root_pos[env_ids, 2]
         
-        # B's heading = A's heading + 180° (face toward A)
-        heading_b = heading_a + np.pi
+        # B's rotation: Keep A's pitch/roll (upright posture), but rotate heading by +90°
+        # This makes B face RIGHT (toward A, who is on B's right side)
+        # Method: Decompose A's rotation into heading + pitch/roll, then recompose with new heading
+        # Extract A's heading rotation
+        heading_quat_a = torch_utils.calc_heading_quat(root_rot_a)
+        heading_quat_a_inv = torch_utils.quat_conjugate(heading_quat_a)
         
-        # Convert heading angle to quaternion (rotation around Z axis)
+        # Remove heading from A's rotation to get pitch/roll component
+        pitch_roll_quat = quat_mul(heading_quat_a_inv, root_rot_a)
+        
+        # Create B's heading: B faces RIGHT (toward A, who is on B's right side)
+        # If A's heading is theta, B's heading should be theta - 90° (or theta + 270°)
+        # This makes B face right, which is toward A
+        heading_b = heading_a + np.pi  # -90 degrees (face right toward A)
         axis = torch.zeros((num_reset, 3), device=self.device)
         axis[:, 2] = 1.0  # Z axis
-        rot_b = quat_from_angle_axis(heading_b, axis)
+        heading_quat_b = quat_from_angle_axis(heading_b, axis)
+        
+        # Recompose: B's rotation = B's heading * A's pitch/roll
+        rot_b = quat_mul(heading_quat_b, pitch_roll_quat)
         self._humanoid_b_root_states[env_ids, 3:7] = rot_b
+        
+        # DEBUG: Print rotation info
+        if num_reset > 0:
+            print(f"[DEBUG _reset_humanoid_b] num_reset: {num_reset}")
+            print(f"[DEBUG] A init_root_pos[0]: {self.init_root_pos[env_ids[0]]}")
+            print(f"[DEBUG] A heading_a[0]: {heading_a[0]:.4f} ({heading_a[0]*180/np.pi:.2f}°)")
+            print(f"[DEBUG] B position offset: ({offset_x[0]:.3f}, {offset_y[0]:.3f}, 0)")
+            print(f"[DEBUG] B heading_b[0]: {heading_b[0]:.4f} ({heading_b[0]*180/np.pi:.2f}°)")
+            print(f"[DEBUG] B rot_b[0]: {rot_b[0]}")
         
         # Zero velocities
         self._humanoid_b_root_states[env_ids, 7:13] = 0.0
@@ -582,6 +648,7 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
         # Same DOF poses as humanoid A (can be customized later)
         self._dof_pos_b[env_ids] = self.init_dof_pos[env_ids]
         self._dof_vel_b[env_ids] = 0.0
+        
         return
 
     def _reset_random_ref_state_init(self, env_ids):
