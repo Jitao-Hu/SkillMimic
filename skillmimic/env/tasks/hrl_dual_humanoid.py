@@ -21,6 +21,7 @@ from isaacgym import gymtorch
 from isaacgym.torch_utils import *
 
 from env.tasks.skillmimic_dual import SkillMimicDualHumanoid
+from env.tasks.humanoid_object_task import compute_obj_observations
 
 # Skill IDs for pass-and-catch task
 SKILL_PASS = 4    # 004: pass
@@ -83,6 +84,24 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
             return self.goal_size
         return 0
 
+    def _compute_obj_obs_b(self, env_ids=None):
+        """
+        Compute ball observations from humanoid B's perspective.
+        
+        This is different from _compute_obj_obs which uses humanoid A's root states.
+        B needs its own ball observations to make independent decisions.
+        """
+        if env_ids is None:
+            root_states_b = self._humanoid_b_root_states
+            tar_states = self._target_states
+        else:
+            root_states_b = self._humanoid_b_root_states[env_ids]
+            tar_states = self._target_states[env_ids]
+        
+        # Use compute_obj_observations with B's root states instead of A's
+        obs = compute_obj_observations(root_states_b, tar_states)
+        return obs
+
     def _compute_observations(self, env_ids=None):
         """
         Compute observations for HRL.
@@ -90,13 +109,15 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
         """
         # Compute base observations (humanoid A state + ball + other humanoid)
         humanoid_a_obs = self._compute_humanoid_obs(env_ids)
-        obj_obs = self._compute_obj_obs(env_ids)
+        obj_obs = self._compute_obj_obs(env_ids)  # Ball obs from A's perspective
+        obj_obs_b = self._compute_obj_obs_b(env_ids)  # Ball obs from B's perspective
         other_obs_for_a, other_obs_for_b = self._compute_other_humanoid_obs(env_ids)
 
         # Cache LLC observations for both humanoids (humanoid_obs + obj_obs)
+        # A uses ball obs from A's perspective, B uses ball obs from B's perspective
         humanoid_obj_obs_a = torch.cat([humanoid_a_obs, obj_obs], dim=-1)
         humanoid_b_obs = self._compute_humanoid_b_obs(env_ids)
-        humanoid_obj_obs_b = torch.cat([humanoid_b_obs, obj_obs], dim=-1)
+        humanoid_obj_obs_b = torch.cat([humanoid_b_obs, obj_obs_b], dim=-1)
 
         if env_ids is None:
             self._llc_obs_a[:] = humanoid_obj_obs_a

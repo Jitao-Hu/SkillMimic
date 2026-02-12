@@ -604,7 +604,7 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
         
         # B's position = A's position + A's LEFT direction × spacing
         # Left direction: (-sin(heading), cos(heading), 0) - perpendicular to forward
-        offset_x = -torch.sin(heading_a) * self._humanoid_b_spacing
+        offset_x = -torch.sin(heading_a) * self._humanoid_b_spacing + 0.5
         offset_y = -torch.cos(heading_a) * self._humanoid_b_spacing
         
         self._humanoid_b_root_states[env_ids, 0] = self.init_root_pos[env_ids, 0] + offset_x
@@ -624,7 +624,7 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
         # Create B's heading: B faces RIGHT (toward A, who is on B's right side)
         # If A's heading is theta, B's heading should be theta - 90° (or theta + 270°)
         # This makes B face right, which is toward A
-        heading_b = heading_a + np.pi  # -90 degrees (face right toward A)
+        heading_b = heading_a + np.pi  # +180 degrees (face right toward A)
         axis = torch.zeros((num_reset, 3), device=self.device)
         axis[:, 2] = 1.0  # Z axis
         heading_quat_b = quat_from_angle_axis(heading_b, axis)
