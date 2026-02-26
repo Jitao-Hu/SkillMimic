@@ -84,6 +84,7 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
         self.reward_weights_default = cfg["env"]["rewardWeights"]
         self.save_images = cfg['env']['saveImages']
         self.save_images_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._save_frame_count = 0  # global counter so multiple episodes don't overwrite
         self.init_vel = cfg['env']['initVel']
         self.isTest = cfg['args'].test
 
@@ -998,10 +999,11 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
             self._update_camera()
             self._draw_task()
             
-            # Save images if enabled
+            # Save images if enabled (global frame count so episodes don't overwrite)
             if self.save_images:
                 env_ids = 0
-                frame_id = t if self.play_dataset else self.progress_buf[env_ids]
+                frame_id = self._save_frame_count
+                self._save_frame_count += 1
                 rgb_filename = "skillmimic/data/images/" + self.save_images_timestamp + "/rgb_env%d_frame%05d.png" % (env_ids, frame_id)
                 os.makedirs("skillmimic/data/images/" + self.save_images_timestamp, exist_ok=True)
                 self.gym.write_viewer_image_to_file(self.viewer, rgb_filename)

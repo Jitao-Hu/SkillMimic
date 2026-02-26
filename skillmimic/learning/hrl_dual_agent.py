@@ -92,7 +92,7 @@ class HRLDualAgent(HRLAgentDiscrete):
         
         # Extract base observations for LLC (without task obs) for BOTH humanoids
         # Shape: [num_envs, 838] each (humanoid_obs + obj_obs)
-        llc_obs_a_base, llc_obs_b_base = self.env.task.get_llc_obs_pair()
+        llc_obs_a_base, llc_obs_b_base = self.vec_env.env.task.get_llc_obs_pair()
         llc_obs_a = llc_obs_a_base
         llc_obs_b = llc_obs_b_base
         

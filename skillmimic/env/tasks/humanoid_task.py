@@ -484,42 +484,46 @@ class HumanoidWholeBody(BaseTask):
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self._cam_prev_char_pos = self._humanoid_root_states[0, 0:3].cpu().numpy()
         
-        cam_pos = gymapi.Vec3(self._cam_prev_char_pos[0], 
-                              self._cam_prev_char_pos[1] - 3.0, 
-                              1.50)
-        cam_target = gymapi.Vec3(self._cam_prev_char_pos[0],
-                                 self._cam_prev_char_pos[1],
-                                 1.0)
-        # cam_pos = gymapi.Vec3(0, 
-        #                       - 3.0, 
-        #                       4.0)
-        # cam_target = gymapi.Vec3(0,
-        #                          0,
-        #                          1.3)
+        # cam_pos = gymapi.Vec3(self._cam_prev_char_pos[0], 
+        #                       self._cam_prev_char_pos[1] - 3.0, 
+        #                       1.50)
+        # cam_target = gymapi.Vec3(self._cam_prev_char_pos[0],
+                                #  self._cam_prev_char_pos[1],
+                                #  1.0)
+        cam_pos = gymapi.Vec3(-3, 
+                              0, 
+                              1.5)
+        cam_target = gymapi.Vec3(1,
+                                 0,
+                                 1.5)
         self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
         return
 
     def _update_camera(self):
-        self.gym.refresh_actor_root_state_tensor(self.sim)
-        char_root_pos = self._humanoid_root_states[0, 0:3].cpu().numpy()
+        # self.gym.refresh_actor_root_state_tensor(self.sim)
+        # char_root_pos = self._humanoid_root_states[0, 0:3].cpu().numpy()
         
-        cam_trans = self.gym.get_viewer_camera_transform(self.viewer, None)
-        cam_pos = np.array([cam_trans.p.x, cam_trans.p.y, cam_trans.p.z])
-        cam_delta = cam_pos - self._cam_prev_char_pos
+        # cam_trans = self.gym.get_viewer_camera_transform(self.viewer, None)
+        # cam_pos = np.array([cam_trans.p.x, cam_trans.p.y, cam_trans.p.z])
+        # cam_delta = cam_pos - self._cam_prev_char_pos
 
-        new_cam_target = gymapi.Vec3(char_root_pos[0], char_root_pos[1], 1.0)
-        new_cam_pos = gymapi.Vec3(char_root_pos[0] + cam_delta[0], 
-                                  char_root_pos[1] + cam_delta[1], 
-                                  cam_pos[2])
+        # new_cam_target = gymapi.Vec3(char_root_pos[0], char_root_pos[1], 1.0)
+        # new_cam_pos = gymapi.Vec3(char_root_pos[0] + cam_delta[0], 
+        #                           char_root_pos[1] + cam_delta[1], 
+        #                           cam_pos[2])
 
-        self.gym.viewer_camera_look_at(self.viewer, None, new_cam_pos, new_cam_target)
+        # self.gym.viewer_camera_look_at(self.viewer, None, new_cam_pos, new_cam_target)
 
-        self._cam_prev_char_pos[:] = char_root_pos
+        # self._cam_prev_char_pos[:] = char_root_pos
 
         # # # fixed camera
-        # new_cam_target = gymapi.Vec3(0, 0.5, 1.0)
-        # new_cam_pos = gymapi.Vec3(1, -1, 1.6)
-        # self.gym.viewer_camera_look_at(self.viewer, None, new_cam_pos, new_cam_target)
+        # cam_pos = gymapi.Vec3(3, 
+        #                       -3, 
+        #                       1.5)
+        # cam_target = gymapi.Vec3(3,
+        #                          5,
+        #                          1.5)
+        # self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
         return
     
 
