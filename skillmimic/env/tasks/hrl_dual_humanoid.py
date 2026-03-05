@@ -84,17 +84,28 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
         if self._enable_task_obs:
             return self.goal_size
         return 0
-
+    
     def get_obs_size(self):
         """
         Total observation size for HLC.
         
-        Base dual-humanoid obs (self + ball + other + condition) comes from parent.
-        When task observations are enabled, we append `goal_size` dims.
+        Structure:
+            humanoid_obs (self._num_obs)
+            + obj_obs (15)
+            + other_humanoid_obs (15)
+            + optional task_obs (goal_size when enabled)
+            + condition embedding (64)
         """
-        obs_size = super().get_obs_size()
+        humanoid_obs_size = self._num_obs
+        obj_obs_size = 15
+        other_obs_size = 15
+        
+        obs_size = humanoid_obs_size + obj_obs_size + other_obs_size
+        
         if self._enable_task_obs:
             obs_size += self.goal_size
+        
+        obs_size += self.condition_size
         return obs_size
 
     def _compute_obj_obs_b(self, env_ids=None):
