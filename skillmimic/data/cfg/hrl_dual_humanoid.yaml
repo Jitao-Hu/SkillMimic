@@ -82,7 +82,7 @@ env:
 
   # HRL-specific settings
   enableTaskObs: True
-  goalSize: 5  # Size of task observations
+  goalSize: 12  # Size of task observations (A 6 dims + B 6 dims)
 
 sim:
   substeps: 2

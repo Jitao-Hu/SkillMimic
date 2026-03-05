@@ -1147,39 +1147,26 @@ def compute_coop_reward(ball_pos, ball_vel,
                         termination_heights):
     # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, float, float, float, float, float, float, float, float, Tensor) -> Tensor
     """
-    Compute cooperative pass-and-catch reward with posture constraints.
+    Compute cooperative pass-and-catch reward with posture constraints (Phase 2).
     
-    Reward components:
-    1. alive: Both humanoids standing upright
-    2. ball_to_hand: Catcher's hands approaching the ball
-    3. pass_direction: Ball velocity pointing toward catcher (ENHANCED with squared alignment)
-    4. catch_success: Ball contacted by catcher's hand (CONDITIONAL on standing)
-    5. ball_height: Ball at catchable height (0.5m - 1.5m)
-    6. standing: NEW - CoM height reward for maintaining standing posture
-    7. upright: NEW - Body verticality reward (penalize lying down)
-    8. ground_contact_penalty: NEW - Penalty for non-foot ground contact
-    
-    Args:
-        ball_pos: Ball position [N, 3]
-        ball_vel: Ball velocity [N, 3]
-        root_pos_a/b: Humanoid root position [N, 3]
-        root_rot_a/b: Humanoid root rotation quaternion [N, 4]
-        height_a/b: Humanoid height [N]
-        dist_ball_to_hand_a/b: Distance from ball to closest hand [N]
-        ball_contact_force: Contact force on ball [N, 3]
-        contact_forces_a/b: Contact forces on humanoid bodies [N, num_bodies, 3]
-        non_foot_body_ids: Indices of non-foot bodies [num_non_foot]
-        w_*: Reward weights
-        termination_heights: Height threshold for falling [N]
-        
-    Returns:
-        Tensor [N]: Total reward
+    Reward structure:
+    1. R_pass: Quality of pass when ball is in flight (distance from ball to catcher hand)
+    2. R_catch: Soft guidance by distance + hard catch using cg2 contact and standing condition
+    3. R_coop = R_pass * R_catch, scaled by w_catch_success
+    4. Standing / upright / ground_contact_penalty remain additive stability terms
+    5. ball_to_hand / pass_direction / catch_success / ball_height are no longer added separately
     """
     num_envs = ball_pos.shape[0]
     device = ball_pos.device
     
-    # Minimum standing height constant
+    # Constants
     MIN_STANDING_HEIGHT = 0.8
+    K_PASS = 2.0
+    BALL_IN_FLIGHT_SPEED = 0.5
+    BALL_LEFT_HAND_DIST = 0.2
+    K_CATCH_SOFT = 2.0
+    CATCH_HAND_DIST = 0.15
+    CG2_CONTACT_THRESH = 1.0
     
     reward = torch.zeros(num_envs, device=device, dtype=torch.float32)
     
@@ -1189,57 +1176,52 @@ def compute_coop_reward(ball_pos, ball_vel,
     alive_b = (height_b > termination_heights).float()
     r_alive = alive_a * alive_b * w_alive
     
-    # =========== 2. Ball to Hand Reward ===========
+    # =========== 2. Determine Catcher & Basic Distances ===========
     ball_to_a = torch.norm(ball_pos - root_pos_a, dim=-1)
     ball_to_b = torch.norm(ball_pos - root_pos_b, dim=-1)
     
     # Determine who is closer to ball (passer vs catcher)
     b_is_catcher = (ball_to_a < ball_to_b).float()
     
-    # Reward catcher's hand approaching the ball
+    # Catcher's hand distance to ball (used in R_catch)
     catcher_hand_dist = dist_ball_to_hand_b * b_is_catcher + dist_ball_to_hand_a * (1.0 - b_is_catcher)
-    r_ball_to_hand = torch.exp(-2.0 * catcher_hand_dist) * w_ball_to_hand
     
-    # =========== 3. Pass Direction Reward (ENHANCED) ===========
-    # Use SQUARED alignment for steeper reward curve
+    # Ball speed
     ball_speed = torch.norm(ball_vel, dim=-1)
     
-    # Direction from ball to catcher
-    dir_ball_to_catcher = (root_pos_b * b_is_catcher.unsqueeze(-1) + 
-                           root_pos_a * (1.0 - b_is_catcher.unsqueeze(-1))) - ball_pos
-    dir_ball_to_catcher_norm = dir_ball_to_catcher / (torch.norm(dir_ball_to_catcher, dim=-1, keepdim=True) + 1e-8)
+    # =========== 3. R_pass: Pass Quality When Ball Is in Flight ===========
+    # Ball considered "in flight" only when it has left A's hand and is moving fast enough
+    ball_in_flight = (ball_speed > BALL_IN_FLIGHT_SPEED) & (dist_ball_to_hand_a > BALL_LEFT_HAND_DIST)
+    dist_to_catcher_hand = dist_ball_to_hand_b * b_is_catcher + dist_ball_to_hand_a * (1.0 - b_is_catcher)
+    R_pass = torch.where(
+        ball_in_flight,
+        torch.exp(-K_PASS * dist_to_catcher_hand),
+        torch.ones(num_envs, device=device, dtype=torch.float32),
+    )
     
-    # Ball velocity direction
-    ball_vel_norm = ball_vel / (ball_speed.unsqueeze(-1) + 1e-8)
-    
-    # Dot product: positive if ball moving toward catcher
-    alignment = torch.sum(ball_vel_norm * dir_ball_to_catcher_norm, dim=-1)
-    
-    # ENHANCED: Use squared alignment for steeper reward curve (more reward for direct passes)
-    alignment_squared = torch.pow(torch.clamp(alignment, min=0.0), 2)
-    r_pass_direction = alignment_squared * (ball_speed > 0.5).float() * w_pass_direction
-    
-    # =========== 4. Catch Success Reward (CONDITIONAL on standing) ===========
-    ball_has_contact = (torch.norm(ball_contact_force, dim=-1) > 1.0).float()
-    catcher_catch = (catcher_hand_dist < 0.15).float()  # Within 15cm of hand
-    
-    # CONDITIONAL: Only reward catch if catcher is standing properly
+    # =========== 4. R_catch: Soft Distance Guidance + Hard Catch ===========
+    # Hard catch: cg2 contact, close hand distance, and catcher standing
+    ball_has_contact = (torch.norm(ball_contact_force, dim=-1) > CG2_CONTACT_THRESH).float()
+    hard_catch_dist = (catcher_hand_dist < CATCH_HAND_DIST).float()
     catcher_height = height_b * b_is_catcher + height_a * (1.0 - b_is_catcher)
     catcher_is_standing = (catcher_height > MIN_STANDING_HEIGHT).float()
-    r_catch_success = ball_has_contact * catcher_catch * catcher_is_standing * w_catch_success
+    hard_catch = ball_has_contact * hard_catch_dist * catcher_is_standing
     
-    # =========== 5. Ball Height Reward ===========
-    ball_height = ball_pos[:, 2]
-    height_in_range = ((ball_height > 0.5) & (ball_height < 1.5)).float()
-    r_ball_height = height_in_range * w_ball_height
+    # Soft catch: distance-based shaping when not caught yet
+    soft_catch = torch.exp(-K_CATCH_SOFT * catcher_hand_dist)
+    R_catch = (1.0 - hard_catch) * soft_catch + hard_catch * 1.0
     
-    # =========== 6. Standing Reward (NEW) ===========
+    # =========== 5. Cooperative Reward (Multiplicative) ===========
+    R_coop = R_pass * R_catch
+    r_coop = R_coop * w_catch_success
+    
+    # =========== 6. Standing Reward (unchanged) ===========
     # Reward for maintaining CoM above minimum standing height
     standing_reward_a = torch.clamp((height_a - MIN_STANDING_HEIGHT) / 0.5, 0.0, 1.0)
     standing_reward_b = torch.clamp((height_b - MIN_STANDING_HEIGHT) / 0.5, 0.0, 1.0)
     r_standing = (standing_reward_a + standing_reward_b) * 0.5 * w_standing
     
-    # =========== 7. Upright Reward (NEW) ===========
+    # =========== 7. Upright Reward (unchanged) ===========
     # Reward for body being vertical (Z-axis of body aligned with world Z)
     # Compute body up vector from rotation quaternion
     # For quaternion q = [x, y, z, w], rotating [0,0,1] gives body's up direction
@@ -1260,7 +1242,7 @@ def compute_coop_reward(ball_pos, ball_vel,
     upright_b = torch.clamp(body_up_z_b, 0.0, 1.0)
     r_upright = (upright_a + upright_b) * 0.5 * w_upright
     
-    # =========== 8. Ground Contact Penalty (NEW) ===========
+    # =========== 8. Ground Contact Penalty (unchanged) ===========
     # Penalty for non-foot body parts touching ground
     contact_threshold = 10.0  # Force threshold for detecting ground contact
     
@@ -1277,7 +1259,7 @@ def compute_coop_reward(ball_pos, ball_vel,
     r_ground_contact = (ground_contact_a + ground_contact_b) * w_ground_contact_penalty  # w is negative
     
     # =========== Total Reward ===========
-    reward = (r_alive + r_ball_to_hand + r_pass_direction + r_catch_success + 
-              r_ball_height + r_standing + r_upright + r_ground_contact)
+    # Phase 2: only R_coop (scaled) + stability terms are added
+    reward = r_coop + r_alive + r_standing + r_upright + r_ground_contact
     
     return reward
