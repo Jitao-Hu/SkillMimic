@@ -47,6 +47,13 @@ class HRLDualAgent(HRLAgentDiscrete):
         # because _build_llc_agent_config is called during parent init
         self._single_action_size = 156  # Will be verified after env init
         
+        # Phase 3: Guidance penalty (skill label alignment)
+        # Read optional config values with sensible defaults
+        self._guidance_penalty_weight = float(config.get('guidance_penalty_weight', 1.0))
+        self._holding_dist_thresh = float(config.get('holding_dist_thresh', 0.2))
+        self._holding_contact_thresh = float(config.get('holding_contact_thresh', 1.0))
+        self._ball_to_b_speed_thresh = float(config.get('ball_to_b_speed_thresh', 0.5))
+
         super().__init__(base_name, config)
         
         # Verify and update from actual env
@@ -59,8 +66,121 @@ class HRLDualAgent(HRLAgentDiscrete):
         print(f"[HRLDualAgent] Single humanoid action size: {self._single_action_size}")
         print(f"[HRLDualAgent] Control mapping: {self._control_mapping}")
         print(f"[HRLDualAgent] Latent dim: {self._latent_dim}")
+        print(f"[HRLDualAgent] Guidance penalty weight: {self._guidance_penalty_weight}")
         
         return
+
+    def _apply_guidance_penalty(self, rewards, actions):
+        """
+        Apply skill label guidance penalty on top of environment rewards.
+        
+        Penalties (per env step at HLC timescale):
+        - If A is holding the ball but selected skill for A is not PASS (4): subtract weight
+        - If ball is flying toward B but selected skill for B is not CATCH (3) or RUN (13): subtract weight
+        """
+        # Only apply when we have tensor observations / rewards
+        if not self.is_tensor_obses:
+            return rewards
+
+        # Ensure actions is 1D long tensor on same device as rewards
+        device = rewards.device
+        actions_tensor = actions
+        if actions_tensor.dim() > 1:
+            actions_tensor = actions_tensor.squeeze(-1)
+        actions_tensor = actions_tensor.long().to(device)
+
+        # Map discrete HLC action to (skill_a, skill_b) using same control mapping as _compute_llc_action
+        controlmapping = torch.tensor(self._control_mapping, device=device, dtype=torch.long)
+        num_skills_per_humanoid = controlmapping.shape[0] // 2
+        skill_idx = actions_tensor % num_skills_per_humanoid
+        skill_a = controlmapping[skill_idx]
+        skill_b = controlmapping[num_skills_per_humanoid + skill_idx]
+
+        # Access underlying dual-humanoid task
+        task = self.vec_env.env.task
+
+        # Current sim state (per env)
+        ball_pos = task._target_states[:, 0:3]
+        ball_vel = task._target_states[:, 7:10]
+        root_pos_a = task._humanoid_root_states[:, 0:3]
+        root_pos_b = task._humanoid_b_root_states[:, 0:3]
+        ball_contact_force = task._tar_contact_forces  # [N, 3]
+
+        # Distances from ball to hands
+        dist_ball_to_hand_a = task._get_closest_hand_distance(ball_pos, 'a')
+        dist_ball_to_hand_b = task._get_closest_hand_distance(ball_pos, 'b')
+
+        # ---------- State 1: A_holding (A holds the ball) ----------
+        ball_has_contact = (torch.norm(ball_contact_force, dim=-1) > self._holding_contact_thresh)
+        a_holding = (dist_ball_to_hand_a < self._holding_dist_thresh) & ball_has_contact
+
+        # ---------- State 2: Ball_to_B (ball flying toward B) ----------
+        ball_speed = torch.norm(ball_vel, dim=-1)
+        to_b = torch.sum(ball_vel * (root_pos_b - ball_pos), dim=-1) > 0.0
+        away_from_a = torch.sum(ball_vel * (ball_pos - root_pos_a), dim=-1) > 0.0
+        ball_to_b = (ball_speed > self._ball_to_b_speed_thresh) & to_b & away_from_a & (dist_ball_to_hand_b < dist_ball_to_hand_a)
+
+        # ---------- Penalties ----------
+        penalty = torch.zeros_like(rewards)
+
+        # 1) Pass guidance: A is holding but did not choose PASS (4)
+        penalty += (a_holding & (skill_a != 4)).float() * self._guidance_penalty_weight
+
+        # 2) Catch / run guidance: ball flying to B but B did not choose CATCH (3) or RUN (13)
+        bad_b_skill = ~((skill_b == 3) | (skill_b == 13))
+        penalty += (ball_to_b & bad_b_skill).float() * self._guidance_penalty_weight
+
+        return rewards - penalty
+
+    def env_step(self, actions):
+        """
+        Override env_step to insert guidance penalty at HLC timescale.
+        
+        Logic mirrors HRLAgentDiscrete.env_step, with an additional
+        call to _apply_guidance_penalty after averaging LLC rewards.
+        """
+        obs = self.obs['obs']
+
+        rewards = 0.0
+        done_count = 0.0
+        terminate_count = 0.0
+        for _ in range(self._llc_steps):
+            llc_actions = self._compute_llc_action(obs, actions)
+
+            obs, curr_rewards, curr_dones, infos = self.vec_env.step(llc_actions)
+
+            rewards += curr_rewards
+            done_count += curr_dones
+            terminate_count += infos['terminate']
+
+        # Average rewards over LLC steps
+        rewards /= self._llc_steps
+
+        # Apply guidance penalty on top of averaged rewards (Phase 3)
+        if self.is_tensor_obses:
+            rewards = self._apply_guidance_penalty(rewards, actions)
+
+        dones = torch.zeros_like(done_count)
+        dones[done_count > 0] = 1.0
+        terminate = torch.zeros_like(terminate_count)
+        terminate[terminate_count > 0] = 1.0
+        infos['terminate'] = terminate
+
+        if self.is_tensor_obses:
+            if self.value_size == 1:
+                rewards = rewards.unsqueeze(1)
+            return self.obs_to_tensors(obs), rewards.to(self.ppo_device), dones.to(self.ppo_device), infos
+        else:
+            # Non-tensor path kept consistent with base implementation
+            rewards_np = rewards
+            if self.value_size == 1:
+                rewards_np = np.expand_dims(rewards_np, axis=1)
+            return (
+                self.obs_to_tensors(obs),
+                torch.from_numpy(rewards_np).to(self.ppo_device).float(),
+                torch.from_numpy(dones).to(self.ppo_device),
+                infos,
+            )
 
     def _compute_llc_action(self, obs, actions):
         """
