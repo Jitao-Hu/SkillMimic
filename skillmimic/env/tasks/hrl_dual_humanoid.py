@@ -46,7 +46,8 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
     def __init__(self, cfg, sim_params, physics_engine, device_type, device_id, headless):
         # HRL-specific config
         self._enable_task_obs = cfg["env"].get("enableTaskObs", True)
-        self.goal_size = cfg["env"].get("goalSize", 5)
+        # Phase 1: default task observation size is 12 (A:6 + B:6)
+        self.goal_size = cfg["env"].get("goalSize", 12)
         
         super().__init__(cfg=cfg,
                          sim_params=sim_params,
@@ -83,6 +84,18 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
         if self._enable_task_obs:
             return self.goal_size
         return 0
+
+    def get_obs_size(self):
+        """
+        Total observation size for HLC.
+        
+        Base dual-humanoid obs (self + ball + other + condition) comes from parent.
+        When task observations are enabled, we append `goal_size` dims.
+        """
+        obs_size = super().get_obs_size()
+        if self._enable_task_obs:
+            obs_size += self.goal_size
+        return obs_size
 
     def _compute_obj_obs_b(self, env_ids=None):
         """
@@ -156,48 +169,63 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
 
     def _compute_task_obs(self, env_ids=None):
         """
-        Compute task-specific observations for pass-and-catch.
+        Compute 12D task-specific observations for pass-and-catch (Phase 1).
         
-        Returns:
-            - Relative position of ball to each humanoid
-            - Ball velocity direction
+        Structure (goal_size = 12):
+            - Humanoid A (6 dims, in A's heading frame):
+                1-3: ball position relative to B hand center
+                4-6: humanoid B linear velocity
+            - Humanoid B (6 dims, in B's heading frame):
+                7-9: ball position relative to B root
+                10-12: ball linear velocity
         """
         if env_ids is None:
             root_pos_a = self._humanoid_root_states[:, 0:3]
+            root_rot_a = self._humanoid_root_states[:, 3:7]
             root_pos_b = self._humanoid_b_root_states[:, 0:3]
+            root_rot_b = self._humanoid_b_root_states[:, 3:7]
+            root_vel_b = self._humanoid_b_root_states[:, 7:10]
             ball_pos = self._target_states[:, 0:3]
             ball_vel = self._target_states[:, 7:10]
-            root_rot_a = self._humanoid_root_states[:, 3:7]
+            rigid_body_pos_b = self._rigid_body_pos_b
         else:
             root_pos_a = self._humanoid_root_states[env_ids, 0:3]
+            root_rot_a = self._humanoid_root_states[env_ids, 3:7]
             root_pos_b = self._humanoid_b_root_states[env_ids, 0:3]
+            root_rot_b = self._humanoid_b_root_states[env_ids, 3:7]
+            root_vel_b = self._humanoid_b_root_states[env_ids, 7:10]
             ball_pos = self._target_states[env_ids, 0:3]
             ball_vel = self._target_states[env_ids, 7:10]
-            root_rot_a = self._humanoid_root_states[env_ids, 3:7]
+            rigid_body_pos_b = self._rigid_body_pos_b[env_ids]
 
-        # Compute local observations relative to humanoid A
-        heading_rot = torch_utils.calc_heading_quat_inv(root_rot_a)
-        
-        # Ball position relative to A
-        local_ball_pos = ball_pos - root_pos_a
-        local_ball_pos = quat_rotate(heading_rot, local_ball_pos)
-        
-        # B position relative to A  
-        local_b_pos = root_pos_b - root_pos_a
-        local_b_pos = quat_rotate(heading_rot, local_b_pos)
-        
-        # Ball velocity direction
-        ball_speed = torch.norm(ball_vel, dim=-1, keepdim=True)
-        ball_vel_dir = ball_vel / (ball_speed + 1e-8)
-        local_ball_vel = quat_rotate(heading_rot, ball_vel_dir)
-        
-        # Concatenate task observations [5 dims]
-        task_obs = torch.cat([
-            local_ball_pos[:, :2],      # 2: ball xy relative to A
-            local_b_pos[:, :2],         # 2: B xy relative to A
-            ball_speed,                 # 1: ball speed
-        ], dim=-1)
-        
+        # Hand center for humanoid B in world coordinates
+        hand_pos_b = rigid_body_pos_b[:, self._hand_body_ids, :]  # [N, num_hands, 3]
+        hand_center_b = hand_pos_b.mean(dim=1)                     # [N, 3]
+
+        # Heading rotations: world -> local heading frames
+        heading_rot_a = torch_utils.calc_heading_quat_inv(root_rot_a)
+        heading_rot_b = torch_utils.calc_heading_quat_inv(root_rot_b)
+
+        # Humanoid A: ball offset from B hand center + B linear velocity, both in A's frame
+        ball_rel_B_hand_world = ball_pos - hand_center_b
+        ball_rel_B_hand_a = quat_rotate(heading_rot_a, ball_rel_B_hand_world)
+        root_vel_b_a = quat_rotate(heading_rot_a, root_vel_b)
+
+        # Humanoid B: ball position and velocity in B's local frame
+        ball_rel_root_b = ball_pos - root_pos_b
+        ball_pos_b_local = quat_rotate(heading_rot_b, ball_rel_root_b)
+        ball_vel_b_local = quat_rotate(heading_rot_b, ball_vel)
+
+        task_obs = torch.cat(
+            [
+                ball_rel_B_hand_a,
+                root_vel_b_a,
+                ball_pos_b_local,
+                ball_vel_b_local,
+            ],
+            dim=-1,
+        )
+
         return task_obs
 
     def _compute_reward(self, actions):

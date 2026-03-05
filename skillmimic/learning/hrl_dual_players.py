@@ -118,13 +118,13 @@ class HRLDualPlayer(HRLPlayerDiscrete):
         # Calculate LLC observation size:
         # LLC expects: humanoid_obs + obj_obs + condition + skill_embedding
         # Dual env has: humanoid_obs + obj_obs + other_humanoid_obs + task_obs + condition
-        # Need to remove other_humanoid_obs (15) and task_obs (task_size)
+        # Need to remove other_humanoid_obs (15) and task_obs (goal_size)
         obs_space = llc_env_info['observation_space']
-        total_obs_size = obs_space.shape[0]  # 922 for HRL dual
+        total_obs_size = obs_space.shape[0]  # 929 for HRL dual when goalSize=12
         
-        # Remove: other_humanoid_obs (15) + task_obs (task_size)
+        # Remove: other_humanoid_obs (15) + task_obs (goal_size)
         # Add: skill_embedding (64)
-        llc_obs_size = total_obs_size - 15 - self._task_size + 64  # 922 - 15 - 5 + 64 = 966
+        llc_obs_size = total_obs_size - 15 - self._task_size + 64  # 929 - 15 - goalSize + 64
         # But LLC actually needs: original LLC obs (838) + condition (64) + skill (64) = 966? No...
         # LLC checkpoint was trained with: humanoid_obs + obj_obs + condition + skill = 902
         # So: 838 + 64 = 902 (without skill embedding in original)
@@ -137,9 +137,11 @@ class HRLDualPlayer(HRLPlayerDiscrete):
         # - 902 - 64 (skill) = 838 = humanoid_obs + obj_obs
         # - With skill: 838 + 64 = 902
         
-        # HRL dual total = 922
-        # HRL dual without condition = 922 - 64 = 858
-        # HRL dual without task_obs = 858 - 5 = 853
+        # HRL dual total = 823 + 15 + 15 + goalSize + 64
+        #                = 917 + goalSize
+        # With goalSize = 12 -> total = 929
+        # HRL dual without condition = 929 - 64 = 865
+        # HRL dual without task_obs  = 865 - 12 = 853
         # HRL dual without other_obs = 853 - 15 = 838 = humanoid_obs + obj_obs ✓
         
         # So LLC needs: humanoid_obs + obj_obs + skill = 838 + 64 = 902 ✓
@@ -164,19 +166,19 @@ class HRLDualPlayer(HRLPlayerDiscrete):
         """
         Extract LLC-compatible observations from HRL dual humanoid observations.
         
-        HRL dual obs structure (922):
+        HRL dual obs structure (929 when goalSize=12):
         - humanoid_obs: 823 dims
         - obj_obs: 15 dims
         - other_humanoid_obs: 15 dims (NOT needed by LLC)
-        - task_obs: 5 dims (NOT needed by LLC)
+        - task_obs: goalSize dims (NOT needed by LLC, default 12)
         - condition: 64 dims
         
         LLC needs (838):
         - humanoid_obs: 823 dims
         - obj_obs: 15 dims
         """
-        # Structure: [humanoid_obs(823), obj_obs(15), other_obs(15), task_obs(5), condition(64)]
-        # Total: 823 + 15 + 15 + 5 + 64 = 922
+        # Structure: [humanoid_obs(823), obj_obs(15), other_obs(15), task_obs(goalSize), condition(64)]
+        # Total: 823 + 15 + 15 + goalSize + 64 = 917 + goalSize (929 when goalSize=12)
         
         humanoid_obj_size = 838  # humanoid_obs + obj_obs
         condition_size = 64

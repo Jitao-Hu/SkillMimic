@@ -146,17 +146,17 @@ class HRLDualAgent(HRLAgentDiscrete):
         """
         Extract LLC-compatible observations from HRL dual humanoid observations.
         
-        HRL dual obs structure (922):
+        HRL dual obs structure (929 when goalSize=12):
         - humanoid_obs: 823 dims
         - obj_obs: 15 dims
         - other_humanoid_obs: 15 dims (NOT needed by LLC)
-        - task_obs: 5 dims (NOT needed by LLC)
+        - task_obs: goalSize dims (NOT needed by LLC, default 12)
         - condition: 64 dims
         
         LLC needs (838):
         - humanoid_obs: 823 dims
         - obj_obs: 15 dims
         """
-        humanoid_obj_size = 838  # humanoid_obs + obj_obs
+        humanoid_obj_size = 838  # humanoid_obs + obj_obs (unchanged by goalSize)
         llc_obs = obs[..., :humanoid_obj_size]
         return llc_obs
