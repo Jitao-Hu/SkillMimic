@@ -67,7 +67,41 @@ class HRLDualAgent(HRLAgentDiscrete):
         print(f"[HRLDualAgent] Control mapping: {self._control_mapping}")
         print(f"[HRLDualAgent] Latent dim: {self._latent_dim}")
         print(f"[HRLDualAgent] Guidance penalty weight: {self._guidance_penalty_weight}")
+
+        # Skill monitor (lightweight telemetry for HLC skill choices).
+        # Logs aggregated stats every N HLC steps to TensorBoard (and optionally prints).
+        self._skill_monitor_interval = int(config.get('skill_monitor_interval', 200))
+        self._skill_monitor_print = self._as_bool(config.get('skill_monitor_print', True), True)
+        self._skill_monitor_tb = self._as_bool(config.get('skill_monitor_tb', True), True)
+        self._skill_monitor_hlc_steps_total = 0
+        self._skill_monitor_reset_accumulators()
         
+        return
+
+    @staticmethod
+    def _as_bool(v, default: bool) -> bool:
+        if v is None:
+            return default
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return bool(v)
+        if isinstance(v, str):
+            return v.strip().lower() in ('1', 'true', 'yes', 'y', 'on')
+        return default
+
+    def _skill_monitor_reset_accumulators(self):
+        self._skill_monitor_acc_total = 0.0
+        self._skill_monitor_acc_a_pass = 0.0
+        self._skill_monitor_acc_a_run = 0.0
+        self._skill_monitor_acc_a_idle = 0.0
+        self._skill_monitor_acc_b_catch = 0.0
+        self._skill_monitor_acc_b_run = 0.0
+        self._skill_monitor_acc_b_idle = 0.0
+        self._skill_monitor_acc_ball_to_b = 0.0
+        self._skill_monitor_acc_ball_to_b_b_catch = 0.0
+        self._skill_monitor_acc_a_holding = 0.0
+        self._skill_monitor_acc_a_holding_a_pass = 0.0
         return
 
     def _apply_guidance_penalty(self, rewards, actions):
@@ -132,6 +166,109 @@ class HRLDualAgent(HRLAgentDiscrete):
 
         return rewards - penalty
 
+    def _skill_monitor_update(self, actions):
+        if self._skill_monitor_interval <= 0:
+            return
+        if getattr(self, 'rank', 0) != 0:
+            return
+        if not getattr(self, 'is_tensor_obses', False):
+            return
+        if not hasattr(self, 'vec_env') or self.vec_env is None:
+            return
+
+        with torch.no_grad():
+            task = self.vec_env.env.task
+
+            actions_tensor = actions
+            if isinstance(actions_tensor, (list, tuple)):
+                return
+            if actions_tensor.dim() > 1:
+                actions_tensor = actions_tensor.squeeze(-1)
+            actions_tensor = actions_tensor.long().to(task._target_states.device)
+
+            controlmapping = torch.tensor(self._control_mapping, device=actions_tensor.device, dtype=torch.long)
+            num_skills_per_humanoid = controlmapping.shape[0] // 2
+            skill_idx = actions_tensor % num_skills_per_humanoid
+            skill_a = controlmapping[skill_idx]
+            skill_b = controlmapping[num_skills_per_humanoid + skill_idx]
+
+            # Current sim state (per env)
+            ball_pos = task._target_states[:, 0:3]
+            ball_vel = task._target_states[:, 7:10]
+            root_pos_a = task._humanoid_root_states[:, 0:3]
+            root_pos_b = task._humanoid_b_root_states[:, 0:3]
+            ball_contact_force = task._tar_contact_forces  # [N, 3]
+
+            dist_ball_to_hand_a = task._get_closest_hand_distance(ball_pos, 'a')
+            dist_ball_to_hand_b = task._get_closest_hand_distance(ball_pos, 'b')
+
+            ball_has_contact = (torch.norm(ball_contact_force, dim=-1) > self._holding_contact_thresh)
+            a_holding = (dist_ball_to_hand_a < self._holding_dist_thresh) & ball_has_contact
+
+            ball_speed = torch.norm(ball_vel, dim=-1)
+            to_b = torch.sum(ball_vel * (root_pos_b - ball_pos), dim=-1) > 0.0
+            away_from_a = torch.sum(ball_vel * (ball_pos - root_pos_a), dim=-1) > 0.0
+            ball_to_b = (ball_speed > self._ball_to_b_speed_thresh) & to_b & away_from_a & (dist_ball_to_hand_b < dist_ball_to_hand_a)
+
+            batch = float(skill_a.numel())
+            self._skill_monitor_acc_total += batch
+            self._skill_monitor_acc_a_pass += float((skill_a == 4).sum().item())
+            self._skill_monitor_acc_a_run += float((skill_a == 13).sum().item())
+            self._skill_monitor_acc_a_idle += float((skill_a == 31).sum().item())
+            self._skill_monitor_acc_b_catch += float((skill_b == 3).sum().item())
+            self._skill_monitor_acc_b_run += float((skill_b == 13).sum().item())
+            self._skill_monitor_acc_b_idle += float((skill_b == 31).sum().item())
+
+            self._skill_monitor_acc_ball_to_b += float(ball_to_b.sum().item())
+            self._skill_monitor_acc_ball_to_b_b_catch += float((ball_to_b & (skill_b == 3)).sum().item())
+            self._skill_monitor_acc_a_holding += float(a_holding.sum().item())
+            self._skill_monitor_acc_a_holding_a_pass += float((a_holding & (skill_a == 4)).sum().item())
+
+            self._skill_monitor_hlc_steps_total += 1
+            if (self._skill_monitor_hlc_steps_total % self._skill_monitor_interval) != 0:
+                return
+
+            eps = 1e-6
+            total = max(self._skill_monitor_acc_total, eps)
+            a_pass = self._skill_monitor_acc_a_pass / total
+            a_run = self._skill_monitor_acc_a_run / total
+            a_idle = self._skill_monitor_acc_a_idle / total
+            b_catch = self._skill_monitor_acc_b_catch / total
+            b_run = self._skill_monitor_acc_b_run / total
+            b_idle = self._skill_monitor_acc_b_idle / total
+
+            ball_to_b_total = max(self._skill_monitor_acc_ball_to_b, 0.0)
+            a_holding_total = max(self._skill_monitor_acc_a_holding, 0.0)
+            ball_to_b_frac = ball_to_b_total / total
+            p_b_catch_given_ball_to_b = (self._skill_monitor_acc_ball_to_b_b_catch / max(ball_to_b_total, eps)) if ball_to_b_total > 0 else 0.0
+            p_a_pass_given_a_holding = (self._skill_monitor_acc_a_holding_a_pass / max(a_holding_total, eps)) if a_holding_total > 0 else 0.0
+
+            step = int(self._skill_monitor_hlc_steps_total)
+            if self._skill_monitor_tb and hasattr(self, 'writer') and self.writer is not None:
+                self.writer.add_scalar('skills/A_pass_frac', a_pass, step)
+                self.writer.add_scalar('skills/A_run_frac', a_run, step)
+                self.writer.add_scalar('skills/A_idle_frac', a_idle, step)
+                self.writer.add_scalar('skills/B_catch_frac', b_catch, step)
+                self.writer.add_scalar('skills/B_run_frac', b_run, step)
+                self.writer.add_scalar('skills/B_idle_frac', b_idle, step)
+                self.writer.add_scalar('skills/ball_to_b_frac', ball_to_b_frac, step)
+                self.writer.add_scalar('skills/p_B_catch_given_ball_to_B', p_b_catch_given_ball_to_b, step)
+                self.writer.add_scalar('skills/p_A_pass_given_A_holding', p_a_pass_given_a_holding, step)
+
+            if self._skill_monitor_print:
+                print(
+                    "[SkillMonitor]"
+                    f" hlc_step={step}"
+                    f" A(pass/run/idle)={a_pass:.3f}/{a_run:.3f}/{a_idle:.3f}"
+                    f" B(catch/run/idle)={b_catch:.3f}/{b_run:.3f}/{b_idle:.3f}"
+                    f" ball_to_B={ball_to_b_frac:.3f}"
+                    f" P(B_catch|ball_to_B)={p_b_catch_given_ball_to_b:.3f}"
+                    f" P(A_pass|A_holding)={p_a_pass_given_a_holding:.3f}"
+                )
+
+            self._skill_monitor_reset_accumulators()
+            return
+
     def env_step(self, actions):
         """
         Override env_step to insert guidance penalty at HLC timescale.
@@ -159,6 +296,7 @@ class HRLDualAgent(HRLAgentDiscrete):
         # Apply guidance penalty on top of averaged rewards (Phase 3)
         if self.is_tensor_obses:
             rewards = self._apply_guidance_penalty(rewards, actions)
+            self._skill_monitor_update(actions)
 
         dones = torch.zeros_like(done_count)
         dones[done_count > 0] = 1.0
