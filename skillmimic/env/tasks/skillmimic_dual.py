@@ -506,7 +506,7 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
     def _load_motion(self, motion_file):
         """Load motion data (simplified for dual humanoid testing)."""
         self.skill_name = os.path.basename(motion_file)
-        self.max_episode_length = 60
+        self.max_episode_length = 150
         if self.cfg["env"]["episodeLength"] > 0:
             self.max_episode_length = self.cfg["env"]["episodeLength"]
 
