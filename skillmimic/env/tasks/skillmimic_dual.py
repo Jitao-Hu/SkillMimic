@@ -1252,11 +1252,19 @@ def compute_coop_reward(ball_pos, ball_vel,
     contact_magnitude_a = torch.norm(non_foot_contact_a, dim=-1)
     contact_magnitude_b = torch.norm(non_foot_contact_b, dim=-1)
     
-    # Sum of contact magnitudes above threshold (normalized)
-    ground_contact_a = torch.sum(torch.clamp(contact_magnitude_a - contact_threshold, min=0.0), dim=-1) / 100.0
-    ground_contact_b = torch.sum(torch.clamp(contact_magnitude_b - contact_threshold, min=0.0), dim=-1) / 100.0
+    # Sum of contact magnitudes above threshold (normalized), clamped per humanoid
+    # to prevent unbounded negative rewards when a robot falls.
+    max_contact_per_humanoid = 2.0
+    ground_contact_a = torch.clamp(
+        torch.sum(torch.clamp(contact_magnitude_a - contact_threshold, min=0.0), dim=-1) / 100.0,
+        max=max_contact_per_humanoid
+    )
+    ground_contact_b = torch.clamp(
+        torch.sum(torch.clamp(contact_magnitude_b - contact_threshold, min=0.0), dim=-1) / 100.0,
+        max=max_contact_per_humanoid
+    )
     
-    r_ground_contact = (ground_contact_a + ground_contact_b) * w_ground_contact_penalty  # w is negative
+    r_ground_contact = (ground_contact_a + ground_contact_b) * w_ground_contact_penalty
     
     # =========== Total Reward ===========
     # Phase 2: only R_coop (scaled) + stability terms are added
