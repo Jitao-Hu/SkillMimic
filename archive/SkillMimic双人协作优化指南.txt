@@ -1,0 +1,35 @@
+﻿SkillMimic 双人协作传接球任务优化指南
+任务背景
+目前已在 HRLDualHumanoid 任务中搭建好了双人 HRL 架构。现在的核心目标是通过优化高层控制器（HLC）的观测空间和奖励函数，实现稳定的双人传接球协作。Humanoid A 为传球方，Humanoid B 为接球方。
+1. 扩展任务观测空间 (Observation Space)
+目前的 goalSize 只有 5 维度，信息量不足。需要让 HLC 能够感知队友和球的动态关系。
+修改文件: skillmimic/env/tasks/hrl_dual_humanoid.py
+具体要求:
+* 将 goalSize 增加到 12 或更高。
+* Humanoid A (Passer) 的观测应包含：球相对于 B 手部中心的位置（3D），以及 B 的当前移动速度（3D）。
+* Humanoid B (Catcher) 的观测应包含：球的运动矢量（位置 + 速度，6D），以及球相对于自己手部中心的位置（3D）。
+* 坐标系转换: 确保所有相对坐标都转换到各自机器人的 root local coordinate 中。
+2. 协作奖励函数：改为相乘逻辑 (Multiplicative Logic)
+为了避免机器人为了刷生存分而放弃协作（局部最优解），必须实现逻辑门控奖励。只有传得准且接得住，才能得分。
+修改文件: skillmimic/env/tasks/skillmimic_dual.py
+逻辑实现:
+* 传球质量 R_pass: 计算球离开 A 手部后，轨迹与 B 手部中心点的最小距离。使用负指数函数将误差映射到 [0, 1]。
+* 接球质量 R_catch: 严格基于 Contact Graph。如果球与 B 的手部节点有有效接触，且符合 catch 动作的二值接触矩阵，则该项为 1，否则为 0。
+* 最终协作奖励: 采用乘法结构   。
+* 设计目的: 如果 B 没接到球（R_catch = 0），即便 A 传得再准，协作得分也是 0。这会强制两个智能体共同优化。
+* 生存奖励: 保持 standing 和 upright 作为基础分，但不要将其与协作奖励进行简单的加和。
+3. 技能标签的引导惩罚 (Guidance Penalty)
+引导 HLC 在正确的球权状态下切换正确的离散动作标签。
+修改文件: skillmimic/learning/hrl_dual_agent.py
+逻辑实现:
+   * 增加逻辑检测：如果球在 A 手中但 A 未选择 pass (ID: 4)，或者球在空中飞向 B 但 B 未选择 catch (ID: 3) 或 run (ID: 13)，则给予负分惩罚。
+   * 这能缩短 HLC 的探索时间，让它更快对齐技能空间。
+4. 配置文件同步更新
+修改文件: skillmimic/data/cfg/hrl_dual_humanoid.yaml
+具体要求:
+   * 更新 goalSize 匹配代码改动。
+   * 调高 catch_success 的权重。
+   * 建议将 llc_steps 设置为 5，给底层策略足够的物理模拟时间来响应 HLC 指令。
+核心公式
+  
+其中姿态奖励    保证机器人站稳，而协作部分通过相乘确保动作逻辑的一致性。

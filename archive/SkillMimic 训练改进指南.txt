@@ -1,0 +1,24 @@
+﻿任务目标：提升 Agent B 的接球稳定性 (Catching Stability)
+当前 W&B 数据显示 p_B_catch_given_ball_to_B 仅为 63% 左右。我们需要通过优化 Reward、Observation、LLC 调用逻辑和训练课程来提升这一指标。
+1. 强化 B 的 Task Reward 细节
+目前的接球奖励可能过于稀疏。请在奖励计算函数（通常在 compute_reward 或相关类中）进行以下修改：
+* 引入 Ball-to-Hand 引导奖励：在球传向 B 的过程中，增加一个基于球与 B 手部距离的负相关奖励。公式参考：exp(-dist(ball, hand))。这能引导 B 主动迎球，而不是原地等待。
+* 加大 Catch Success 权重：适当提高成功接球瞬间的奖励分值。
+* 增加失败惩罚：如果球进入了 B 的预定接收半径但最终未被接住（例如球落地或出界），给出一个明显的 Negative Reward。
+2. 优化 LLC Skill 调用与动作频率
+B 目前通过 LLC 执行 catch/run。如果高层 Policy 决策频率过低，会错过接球窗口：
+* 检查控制频率 (Control Frequency)：确保 B 在接球阶段的决策频率（Decimation）能够捕捉到球的高速运动。如果物理模拟是 60Hz，建议 Policy 至少保持在 30Hz 或以上。
+* LLC 动作平滑：检查调用 LLC Catch Skill 时的输入参数。如果动作过于僵硬，请引入微小的动作平滑处理，或者在接球瞬间允许 LLC 有更大的手部调整空间。
+3. 实现传球课程学习 (Curriculum Learning)
+A 现在的传球速度可能过快，导致 B 难以反应。请修改环境配置或初始化逻辑：
+* 动态调整 A 的传球初速度：在训练的前期阶段，将 A 传球的最大初速度限制在当前值的 70% 左右。
+* 随成功率联动：设置一个阈值，当 p_B_catch_given_ball_to_B 稳定超过 75% 时，逐步线性增加 A 的传球速度上限，直到恢复正常水平。
+4. 增强观察空间 (Observation Space) 的预判信息
+B 需要更强的轨迹预测能力。请在 get_observations 函数中添加：
+* 球的相对速度与加速度：确保 B 的输入包含球相对于 B 手部的相对位置、相对速度。
+* 未来落点预测：计算球在未来 5-10 个帧的预期位置，并将其作为特征输入给 B。
+5. 调整超参数以增加探索
+B 可能陷入了某种低效的接球姿态。
+* 增加 B 的 Entropy Coef：在配置文件中，针对 B 的 Policy 稍微调高 entropy_coefficient（例如从 0.001 调至 0.005）。
+* 增加噪声：在训练前期给 B 的 Action 输出增加微小的随机噪声，强制它尝试不同的肢体迎球角度。
+请根据以上逻辑，搜索项目中涉及 compute_reward、get_obs、config 以及 A/B 行为控制的代码并进行优化。

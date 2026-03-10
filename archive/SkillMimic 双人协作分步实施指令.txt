@@ -1,0 +1,29 @@
+﻿分步实施计划：双人传接球 HRL 优化
+请按照以下顺序逐步修改代码，每完成一步请向我确认。
+第一阶段：扩展感知与环境配置
+1. 修改 skillmimic/env/tasks/hrl_dual_humanoid.py:
+   * 将 goalSize 设为 12。
+   * 实现 compute_observations：
+      * Humanoid A 观测：球相对于 B 手部的 3D 偏移，B 的 3D 速度。
+      * Humanoid B 观测：球的 3D 位置与 3D 速度，球相对于自己手部的 3D 偏移。
+      * 注意：所有偏移量必须转换到各自机器人的 root local coordinate 中。
+2. 修改配置文件:
+   * 在 hrl_dual_humanoid.yaml 中将 goalSize 同步更新为 12。
+   * 将 llc_steps 设为 5，确保底层策略有足够的模拟步数完成物理交互。
+第二阶段：重构协作奖励函数 (核心)
+1. 修改 skillmimic/env/tasks/skillmimic_dual.py:
+   * 实现   ：基于球离手后轨迹与目标（B 的手部）的距离，使用 exp(-dist)。
+   * 实现   ：
+   * 软判定：先计算手与球的距离得分。
+   * 硬判定：结合 cg2（Contact Graph 物体接触）。
+   * 乘法逻辑实现：total_coop_reward = R_pass * R_catch。
+   * 确保 standing 和 upright 奖励作为独立项，不要被乘法逻辑过滤掉，以维持机器人站立。
+第三阶段：技能空间对齐与引导
+   1. 修改 skillmimic/learning/hrl_dual_agent.py:
+   * 在计算 HLC 的 loss 或奖励时，增加逻辑判断：
+   * 当球在 A 手中且 A 未选 pass (ID: 4) 时，添加一个轻微的负反馈。
+   * 当球飞向 B 且 B 未选 catch (ID: 3) 或 run (ID: 13) 时，添加一个轻微的负反馈。
+第四阶段：验证与调试
+   1. 启动训练脚本 train.sh。
+   2. 观察 debug_*.log 中的协作奖励分值变化。
+   3. 检查可视化界面中，两个机器人的 HLC 标签是否在球飞出的瞬间发生了切换。
