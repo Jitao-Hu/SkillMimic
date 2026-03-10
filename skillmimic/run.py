@@ -27,6 +27,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import os
+from datetime import datetime
 # os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 from utils.config import set_np_formatting, set_seed, get_args, parse_sim_params, load_cfg
@@ -277,6 +278,15 @@ def main():
 
     if args.resume_from:
         cfg_train['params']['config']['resume_from'] = args.resume_from
+        # Use same experiment dir when resuming (extract from checkpoint path)
+        exp_dir = os.path.basename(os.path.dirname(os.path.dirname(args.resume_from)))
+        cfg_train['params']['config']['full_experiment_name'] = exp_dir
+    else:
+        # Custom timestamp: YYYYMMDD-HH-MM-SS (includes year/month)
+        config_name = cfg_train['params']['config'].get('name', 'SkillMimicDualHRL')
+        cfg_train['params']['config']['full_experiment_name'] = (
+            config_name + datetime.now().strftime("_%Y%m%d-%H-%M-%S")
+        )
 
     if args.state_init.lower() != "random":
         cfg["env"]["stateInit"] = args.state_init
