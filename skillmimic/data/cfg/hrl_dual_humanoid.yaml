@@ -73,16 +73,17 @@ env:
   coopRewardWeights:
     alive: 0.1
     ball_to_hand: 2.0
-    pass_direction: 5.0         # Increased from 1.0 for better pass targeting
-    catch_success: 10.0
+    pass_direction: 5.0
+    catch_success: 15.0
     ball_height: 0.5
-    standing: 2.0               # NEW: CoM height reward
-    upright: 1.5                # NEW: Body verticality reward
-    ground_contact_penalty: -5.0  # NEW: Penalty for non-foot ground contact
+    standing: 2.0
+    upright: 1.5
+    ground_contact_penalty: -5.0
+    catch_fail: -5.0
 
   # HRL-specific settings
   enableTaskObs: True
-  goalSize: 12  # Size of task observations (A 6 dims + B 6 dims)
+  goalSize: 21  # Task observations (A: 6 dims + B: 15 dims)
 
 sim:
   substeps: 2

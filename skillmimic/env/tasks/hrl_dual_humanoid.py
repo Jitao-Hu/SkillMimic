@@ -180,15 +180,18 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
 
     def _compute_task_obs(self, env_ids=None):
         """
-        Compute 12D task-specific observations for pass-and-catch (Phase 1).
+        Compute 21D task-specific observations for pass-and-catch.
         
-        Structure (goal_size = 12):
+        Structure (goal_size = 21):
             - Humanoid A (6 dims, in A's heading frame):
                 1-3: ball position relative to B hand center
                 4-6: humanoid B linear velocity
-            - Humanoid B (6 dims, in B's heading frame):
+            - Humanoid B (15 dims, in B's heading frame):
                 7-9: ball position relative to B root
                 10-12: ball linear velocity
+                13-15: ball position relative to B hand center (precision catching)
+                16-18: ball velocity relative to B hand velocity (interception)
+                19-21: predicted ball position in ~0.5s (ballistic, relative to B root)
         """
         if env_ids is None:
             root_pos_a = self._humanoid_root_states[:, 0:3]
@@ -199,6 +202,7 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
             ball_pos = self._target_states[:, 0:3]
             ball_vel = self._target_states[:, 7:10]
             rigid_body_pos_b = self._rigid_body_pos_b
+            rigid_body_vel_b = self._rigid_body_vel_b
         else:
             root_pos_a = self._humanoid_root_states[env_ids, 0:3]
             root_rot_a = self._humanoid_root_states[env_ids, 3:7]
@@ -208,31 +212,49 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
             ball_pos = self._target_states[env_ids, 0:3]
             ball_vel = self._target_states[env_ids, 7:10]
             rigid_body_pos_b = self._rigid_body_pos_b[env_ids]
+            rigid_body_vel_b = self._rigid_body_vel_b[env_ids]
 
-        # Hand center for humanoid B in world coordinates
+        # Hand center position and velocity for humanoid B
         hand_pos_b = rigid_body_pos_b[:, self._hand_body_ids, :]  # [N, num_hands, 3]
         hand_center_b = hand_pos_b.mean(dim=1)                     # [N, 3]
+        hand_vel_b = rigid_body_vel_b[:, self._hand_body_ids, :]  # [N, num_hands, 3]
+        hand_center_vel_b = hand_vel_b.mean(dim=1)                 # [N, 3]
 
-        # Heading rotations: world -> local heading frames
         heading_rot_a = torch_utils.calc_heading_quat_inv(root_rot_a)
         heading_rot_b = torch_utils.calc_heading_quat_inv(root_rot_b)
 
-        # Humanoid A: ball offset from B hand center + B linear velocity, both in A's frame
+        # --- Humanoid A obs (6 dims) ---
         ball_rel_B_hand_world = ball_pos - hand_center_b
         ball_rel_B_hand_a = quat_rotate(heading_rot_a, ball_rel_B_hand_world)
         root_vel_b_a = quat_rotate(heading_rot_a, root_vel_b)
 
-        # Humanoid B: ball position and velocity in B's local frame
+        # --- Humanoid B obs (15 dims) ---
+        # Original: ball relative to root + ball velocity
         ball_rel_root_b = ball_pos - root_pos_b
         ball_pos_b_local = quat_rotate(heading_rot_b, ball_rel_root_b)
         ball_vel_b_local = quat_rotate(heading_rot_b, ball_vel)
 
+        # NEW: ball relative to B's hand center (more precise for catching)
+        ball_rel_hand_b = quat_rotate(heading_rot_b, ball_pos - hand_center_b)
+
+        # NEW: ball velocity relative to B's hand velocity (interception signal)
+        ball_rel_vel_b = quat_rotate(heading_rot_b, ball_vel - hand_center_vel_b)
+
+        # NEW: predicted ball position in ~0.5s using ballistic trajectory
+        PREDICT_DT = 0.5
+        GRAVITY = torch.tensor([0.0, 0.0, -9.81], device=ball_pos.device)
+        future_ball_pos = ball_pos + ball_vel * PREDICT_DT + 0.5 * GRAVITY * (PREDICT_DT ** 2)
+        future_ball_rel_b = quat_rotate(heading_rot_b, future_ball_pos - root_pos_b)
+
         task_obs = torch.cat(
             [
-                ball_rel_B_hand_a,
-                root_vel_b_a,
-                ball_pos_b_local,
-                ball_vel_b_local,
+                ball_rel_B_hand_a,       # A: ball-to-B-hand (3)
+                root_vel_b_a,            # A: B velocity (3)
+                ball_pos_b_local,        # B: ball-to-root (3)
+                ball_vel_b_local,        # B: ball velocity (3)
+                ball_rel_hand_b,         # B: ball-to-hand center (3)
+                ball_rel_vel_b,          # B: ball vel relative to hand vel (3)
+                future_ball_rel_b,       # B: predicted future ball position (3)
             ],
             dim=-1,
         )
@@ -289,6 +311,7 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
             self._reward_w_standing,
             self._reward_w_upright,
             self._reward_w_ground_contact_penalty,
+            self._reward_w_catch_fail,
             self._termination_heights
         )
         return

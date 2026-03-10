@@ -39,12 +39,13 @@ OTHER_HUMANOID_OBS_SIZE = 15
 DEFAULT_COOP_REWARD_WEIGHTS = {
     "alive": 0.1,
     "ball_to_hand": 2.0,
-    "pass_direction": 5.0,      # Increased from 1.0 for better pass targeting
-    "catch_success": 10.0,
+    "pass_direction": 5.0,
+    "catch_success": 15.0,
     "ball_height": 0.5,
-    "standing": 2.0,            # NEW: CoM height reward
-    "upright": 1.5,             # NEW: Body verticality reward
-    "ground_contact_penalty": -5.0,  # NEW: Penalty for non-foot ground contact
+    "standing": 2.0,
+    "upright": 1.5,
+    "ground_contact_penalty": -5.0,
+    "catch_fail": -5.0,
 }
 
 # Minimum standing height for rewards (meters)
@@ -447,6 +448,7 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
         self._reward_w_standing = coop_weights.get("standing", DEFAULT_COOP_REWARD_WEIGHTS["standing"])
         self._reward_w_upright = coop_weights.get("upright", DEFAULT_COOP_REWARD_WEIGHTS["upright"])
         self._reward_w_ground_contact_penalty = coop_weights.get("ground_contact_penalty", DEFAULT_COOP_REWARD_WEIGHTS["ground_contact_penalty"])
+        self._reward_w_catch_fail = coop_weights.get("catch_fail", DEFAULT_COOP_REWARD_WEIGHTS["catch_fail"])
         
         # Build non-foot body indices for ground contact detection
         self._build_non_foot_body_ids()
@@ -460,6 +462,7 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
         print(f"  - standing: {self._reward_w_standing}")
         print(f"  - upright: {self._reward_w_upright}")
         print(f"  - ground_contact_penalty: {self._reward_w_ground_contact_penalty}")
+        print(f"  - catch_fail: {self._reward_w_catch_fail}")
     
     def _build_non_foot_body_ids(self):
         """Build list of body indices that should not touch ground (non-foot bodies)."""
@@ -914,6 +917,7 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
             self._reward_w_standing,
             self._reward_w_upright,
             self._reward_w_ground_contact_penalty,
+            self._reward_w_catch_fail,
             self._termination_heights
         )
         return
@@ -1144,8 +1148,9 @@ def compute_coop_reward(ball_pos, ball_vel,
                         w_alive, w_ball_to_hand, w_pass_direction,
                         w_catch_success, w_ball_height,
                         w_standing, w_upright, w_ground_contact_penalty,
+                        w_catch_fail,
                         termination_heights):
-    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, float, float, float, float, float, float, float, float, Tensor) -> Tensor
+    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, float, float, float, float, float, float, float, float, float, Tensor) -> Tensor
     """
     Compute cooperative pass-and-catch reward with posture constraints (Phase 2).
     
@@ -1266,8 +1271,17 @@ def compute_coop_reward(ball_pos, ball_vel,
     
     r_ground_contact = (ground_contact_a + ground_contact_b) * w_ground_contact_penalty
     
+    # =========== 9. Catch Failure Penalty ===========
+    # Penalize when ball lands on ground near B without being caught.
+    # Conditions: ball near ground (z < 0.3m), ball close to B (< 2m), not caught
+    BALL_GROUND_Z = 0.3
+    CATCH_FAIL_RADIUS = 2.0
+    ball_near_ground = (ball_pos[:, 2] < BALL_GROUND_Z).float()
+    ball_near_b = (ball_to_b < CATCH_FAIL_RADIUS).float()
+    catch_not_made = (1.0 - hard_catch)
+    r_catch_fail = ball_near_ground * ball_near_b * catch_not_made * w_catch_fail
+    
     # =========== Total Reward ===========
-    # Phase 2: only R_coop (scaled) + stability terms are added
-    reward = r_coop + r_alive + r_standing + r_upright + r_ground_contact
+    reward = r_coop + r_alive + r_standing + r_upright + r_ground_contact + r_catch_fail
     
     return reward
