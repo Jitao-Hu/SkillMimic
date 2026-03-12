@@ -110,6 +110,9 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
         # Load cooperative reward weights
         self._load_coop_reward_weights()
 
+        # Per-attempt catch statistics tracking
+        self._init_catch_stats()
+
         # Motion data loading (simplified for dual humanoid)
         self._load_motion(self.motion_file)
 
@@ -463,7 +466,211 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
         print(f"  - upright: {self._reward_w_upright}")
         print(f"  - ground_contact_penalty: {self._reward_w_ground_contact_penalty}")
         print(f"  - catch_fail: {self._reward_w_catch_fail}")
-    
+
+    # ==================== Per-Attempt Catch Statistics ====================
+
+    def _init_catch_stats(self):
+        """Initialize per-attempt catch statistics tracking.
+
+        Tracks two kinds of metrics:
+        1. Event-based (per ball flight):
+           - pass attempt/success: ball left A's hand; did it reach B's hand zone?
+           - catch attempt/success: ball flew toward B; was hard_catch triggered?
+           - catch fail: flight ended near B without hard_catch.
+        2. Per-step fractions (stability):
+           - alive, standing, upright, ground_contact rates.
+        """
+        self._catch_stats_enabled = self.cfg["env"].get("enableCatchStats", False)
+        if not self._catch_stats_enabled:
+            return
+
+        self._catch_stats_print = self.cfg["env"].get("catchStatsPrint", True)
+        self._catch_stats_log_interval = self.cfg["env"].get("catchStatsInterval", 50)
+
+        # Per-env flight state
+        self._cs_ball_was_in_flight = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        self._cs_flight_had_hard_catch = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        self._cs_flight_had_good_pass = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+
+        # Event counters (reset periodically by agent for windowed rates)
+        self._cs_pass_attempts = 0
+        self._cs_pass_successes = 0
+        self._cs_catch_attempts = 0
+        self._cs_catch_successes = 0
+        self._cs_catch_fails = 0
+
+        # Per-step fraction counters
+        self._cs_total_steps = 0
+        self._cs_alive_steps = 0
+        self._cs_standing_steps = 0
+        self._cs_upright_steps = 0
+        self._cs_ground_contact_steps = 0
+
+        # Monotonic flight counter for print scheduling (never reset)
+        self._cs_flights_total = 0
+        self._cs_flights_at_last_print = 0
+
+        print(f"[CatchStats] Enabled (print={self._catch_stats_print}, "
+              f"interval={self._catch_stats_log_interval})")
+
+    def _update_catch_stats(self):
+        """Update per-attempt catch statistics after each physics step.
+
+        Must be called after _compute_reset() so that self.reset_buf is available
+        to finalize in-progress flights for envs that are about to reset.
+        """
+        if not self._catch_stats_enabled:
+            return
+
+        with torch.no_grad():
+            ball_pos = self._target_states[:, 0:3]
+            ball_vel = self._target_states[:, 7:10]
+            root_pos_a = self._humanoid_root_states[:, 0:3]
+            root_pos_b = self._humanoid_b_root_states[:, 0:3]
+            root_rot_a = self._humanoid_root_states[:, 3:7]
+            root_rot_b = self._humanoid_b_root_states[:, 3:7]
+            height_a = self._rigid_body_pos[:, 0, 2]
+            height_b = self._rigid_body_pos_b[:, 0, 2]
+            ball_contact_force = self._tar_contact_forces
+            dist_ball_to_hand_a = self._get_closest_hand_distance(ball_pos, 'a')
+            dist_ball_to_hand_b = self._get_closest_hand_distance(ball_pos, 'b')
+
+            # Thresholds (must match compute_coop_reward)
+            BALL_IN_FLIGHT_SPEED = 0.5
+            BALL_LEFT_HAND_DIST = 0.2
+            CG2_CONTACT_THRESH = 1.0
+            CATCH_HAND_DIST = 0.15
+            GOOD_PASS_DIST = 0.5
+            BALL_GROUND_Z = 0.3
+            CATCH_FAIL_RADIUS = 2.0
+
+            ball_speed = torch.norm(ball_vel, dim=-1)
+            ball_in_flight = (ball_speed > BALL_IN_FLIGHT_SPEED) & (dist_ball_to_hand_a > BALL_LEFT_HAND_DIST)
+
+            ball_to_a = torch.norm(ball_pos - root_pos_a, dim=-1)
+            ball_to_b = torch.norm(ball_pos - root_pos_b, dim=-1)
+            b_is_catcher = ball_to_a < ball_to_b
+            catcher_hand_dist = torch.where(b_is_catcher, dist_ball_to_hand_b, dist_ball_to_hand_a)
+
+            ball_has_contact = torch.norm(ball_contact_force, dim=-1) > CG2_CONTACT_THRESH
+            hard_catch_dist = catcher_hand_dist < CATCH_HAND_DIST
+            catcher_height = torch.where(b_is_catcher, height_b, height_a)
+            catcher_is_standing = catcher_height > MIN_STANDING_HEIGHT
+            hard_catch = ball_has_contact & hard_catch_dist & catcher_is_standing
+
+            good_pass = ball_in_flight & (catcher_hand_dist < GOOD_PASS_DIST)
+
+            # ---- Per-step fraction stats ----
+            n = self.num_envs
+            self._cs_total_steps += n
+            self._cs_alive_steps += int(
+                ((height_a > self._termination_heights) & (height_b > self._termination_heights)).sum().item()
+            )
+            self._cs_standing_steps += int(
+                ((height_a > MIN_STANDING_HEIGHT) & (height_b > MIN_STANDING_HEIGHT)).sum().item()
+            )
+            x_a, y_a = root_rot_a[:, 0], root_rot_a[:, 1]
+            x_b, y_b = root_rot_b[:, 0], root_rot_b[:, 1]
+            up_z_a = 1.0 - 2.0 * (x_a * x_a + y_a * y_a)
+            up_z_b = 1.0 - 2.0 * (x_b * x_b + y_b * y_b)
+            self._cs_upright_steps += int(((up_z_a > 0.8) & (up_z_b > 0.8)).sum().item())
+
+            contact_threshold = 10.0
+            non_foot_a = self._contact_forces[:, self._non_foot_body_ids, :]
+            non_foot_b = self._contact_forces_b[:, self._non_foot_body_ids, :]
+            has_bad_a = (torch.norm(non_foot_a, dim=-1) > contact_threshold).any(dim=1)
+            has_bad_b = (torch.norm(non_foot_b, dim=-1) > contact_threshold).any(dim=1)
+            self._cs_ground_contact_steps += int((has_bad_a | has_bad_b).sum().item())
+
+            # ---- Per-flight event tracking ----
+            self._cs_flight_had_hard_catch |= (ball_in_flight & hard_catch)
+            self._cs_flight_had_good_pass |= (ball_in_flight & good_pass)
+
+            # Flight ends when ball was in flight last step but is not now,
+            # or the env is being reset while ball was in flight.
+            flight_ended = self._cs_ball_was_in_flight & (
+                ~ball_in_flight | (self.reset_buf > 0)
+            )
+
+            if flight_ended.any():
+                n_ended = int(flight_ended.sum().item())
+                n_hard_catch = int((flight_ended & self._cs_flight_had_hard_catch).sum().item())
+                n_good_pass = int((flight_ended & self._cs_flight_had_good_pass).sum().item())
+                ball_near_ground = ball_pos[:, 2] < BALL_GROUND_Z
+                ball_near_b = ball_to_b < CATCH_FAIL_RADIUS
+                n_catch_fail = int(
+                    (flight_ended & ~self._cs_flight_had_hard_catch & ball_near_ground & ball_near_b).sum().item()
+                )
+
+                self._cs_pass_attempts += n_ended
+                self._cs_pass_successes += n_good_pass
+                self._cs_catch_attempts += n_ended
+                self._cs_catch_successes += n_hard_catch
+                self._cs_catch_fails += n_catch_fail
+                self._cs_flights_total += n_ended
+
+                if self._catch_stats_print and \
+                   (self._cs_flights_total - self._cs_flights_at_last_print) >= self._catch_stats_log_interval:
+                    self._cs_flights_at_last_print = self._cs_flights_total
+                    s = self.get_catch_stats()
+                    if s and s['catch_attempts'] > 0:
+                        print(
+                            f"[CatchStats] flights_total={self._cs_flights_total}"
+                            f" pass={s['pass_successes']}/{s['pass_attempts']}"
+                            f"({s['pass_success_rate']:.3f})"
+                            f" catch={s['catch_successes']}/{s['catch_attempts']}"
+                            f"({s['catch_success_rate']:.3f})"
+                            f" fails={s['catch_fails']}"
+                            f" alive={s['alive_rate']:.3f}"
+                            f" standing={s['standing_rate']:.3f}"
+                            f" upright={s['upright_rate']:.3f}"
+                            f" gnd_contact={s['ground_contact_rate']:.3f}"
+                        )
+
+            # Reset per-env flags for finished flights
+            self._cs_flight_had_hard_catch[flight_ended] = False
+            self._cs_flight_had_good_pass[flight_ended] = False
+
+            self._cs_ball_was_in_flight[:] = ball_in_flight
+
+    def get_catch_stats(self):
+        """Return current accumulated catch statistics as a dict."""
+        if not self._catch_stats_enabled:
+            return {}
+        eps = 1e-8
+        pa = max(self._cs_pass_attempts, 1)
+        ca = max(self._cs_catch_attempts, 1)
+        ts = max(self._cs_total_steps, 1)
+        return {
+            'pass_attempts': self._cs_pass_attempts,
+            'pass_successes': self._cs_pass_successes,
+            'pass_success_rate': self._cs_pass_successes / pa,
+            'catch_attempts': self._cs_catch_attempts,
+            'catch_successes': self._cs_catch_successes,
+            'catch_success_rate': self._cs_catch_successes / ca,
+            'catch_fails': self._cs_catch_fails,
+            'catch_fail_rate': self._cs_catch_fails / ca,
+            'alive_rate': self._cs_alive_steps / ts,
+            'standing_rate': self._cs_standing_steps / ts,
+            'upright_rate': self._cs_upright_steps / ts,
+            'ground_contact_rate': self._cs_ground_contact_steps / ts,
+        }
+
+    def reset_catch_stats(self):
+        """Reset accumulated counters for windowed reporting."""
+        if not self._catch_stats_enabled:
+            return
+        self._cs_pass_attempts = 0
+        self._cs_pass_successes = 0
+        self._cs_catch_attempts = 0
+        self._cs_catch_successes = 0
+        self._cs_catch_fails = 0
+        self._cs_total_steps = 0
+        self._cs_alive_steps = 0
+        self._cs_standing_steps = 0
+        self._cs_upright_steps = 0
+        self._cs_ground_contact_steps = 0
+
     def _build_non_foot_body_ids(self):
         """Build list of body indices that should not touch ground (non-foot bodies)."""
         non_foot_ids = []
@@ -989,6 +1196,7 @@ class SkillMimicDualHumanoid(HumanoidWholeBodyWithObject):
         self._compute_observations()
         self._compute_reward(self.actions)
         self._compute_reset()
+        self._update_catch_stats()
 
         self.extras["terminate"] = self._terminate_buf
 

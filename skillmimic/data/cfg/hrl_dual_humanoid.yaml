@@ -81,6 +81,11 @@ env:
     ground_contact_penalty: -5.0
     catch_fail: -5.0
 
+  # Per-attempt catch statistics tracking
+  enableCatchStats: True
+  catchStatsPrint: True
+  catchStatsInterval: 50  # Print every N completed ball flights
+
   # HRL-specific settings
   enableTaskObs: True
   goalSize: 21  # Task observations (A: 6 dims + B: 15 dims)

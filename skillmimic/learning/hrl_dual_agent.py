@@ -269,6 +269,56 @@ class HRLDualAgent(HRLAgentDiscrete):
             self._skill_monitor_reset_accumulators()
             return
 
+    def _catch_stats_log(self):
+        """Periodically read per-attempt catch stats from env and log to tensorboard/wandb."""
+        if not hasattr(self, '_cs_initialized'):
+            task = self.vec_env.env.task
+            self._cs_enabled = getattr(task, '_catch_stats_enabled', False)
+            self._cs_interval = getattr(task, '_catch_stats_log_interval', 50)
+            self._cs_print = getattr(task, '_catch_stats_print', False)
+            self._cs_hlc_step = 0
+            self._cs_initialized = True
+
+        if not self._cs_enabled:
+            return
+
+        self._cs_hlc_step += 1
+        if (self._cs_hlc_step % self._cs_interval) != 0:
+            return
+
+        task = self.vec_env.env.task
+        stats = task.get_catch_stats()
+        if not stats or stats['catch_attempts'] == 0:
+            return
+
+        step = self._cs_hlc_step
+        if hasattr(self, 'writer') and self.writer is not None:
+            self.writer.add_scalar('catch_stats/pass_success_rate', stats['pass_success_rate'], step)
+            self.writer.add_scalar('catch_stats/catch_success_rate', stats['catch_success_rate'], step)
+            self.writer.add_scalar('catch_stats/catch_fail_rate', stats['catch_fail_rate'], step)
+            self.writer.add_scalar('catch_stats/alive_rate', stats['alive_rate'], step)
+            self.writer.add_scalar('catch_stats/standing_rate', stats['standing_rate'], step)
+            self.writer.add_scalar('catch_stats/upright_rate', stats['upright_rate'], step)
+            self.writer.add_scalar('catch_stats/ground_contact_rate', stats['ground_contact_rate'], step)
+            self.writer.add_scalar('catch_stats/pass_attempts', stats['pass_attempts'], step)
+            self.writer.add_scalar('catch_stats/catch_successes', stats['catch_successes'], step)
+
+        if self._cs_print:
+            print(
+                f"[CatchStats] hlc_step={step}"
+                f" pass={stats['pass_successes']}/{stats['pass_attempts']}"
+                f"({stats['pass_success_rate']:.3f})"
+                f" catch={stats['catch_successes']}/{stats['catch_attempts']}"
+                f"({stats['catch_success_rate']:.3f})"
+                f" fails={stats['catch_fails']}"
+                f" alive={stats['alive_rate']:.3f}"
+                f" standing={stats['standing_rate']:.3f}"
+                f" upright={stats['upright_rate']:.3f}"
+                f" gnd_contact={stats['ground_contact_rate']:.3f}"
+            )
+
+        task.reset_catch_stats()
+
     def env_step(self, actions):
         """
         Override env_step to insert guidance penalty at HLC timescale.
@@ -297,6 +347,7 @@ class HRLDualAgent(HRLAgentDiscrete):
         if self.is_tensor_obses:
             rewards = self._apply_guidance_penalty(rewards, actions)
             self._skill_monitor_update(actions)
+            self._catch_stats_log()
 
         dones = torch.zeros_like(done_count)
         dones[done_count > 0] = 1.0
