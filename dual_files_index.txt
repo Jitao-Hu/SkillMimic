@@ -1,0 +1,73 @@
+Dual-related Files and Modified Code Index
+==========================================
+
+This file lists (1) all currently existing "dual" / HRL dual–related files in the repo,
+and (2) all Python and YAML files that have been created or modified for the dual setup.
+
+------------------------------------------------------------
+1. Dual-related files (by path)
+------------------------------------------------------------
+
+These files contain "HRLDual", "hrl_dual", "SkillMimicDualHumanoid", or closely related
+dual-task logic / scripts / docs.
+
+- hrl_dual_framework.txt
+- run.sh
+- train.sh
+- skillmimic/run.py
+- skillmimic/utils/parse_task.py
+- skillmimic/learning/hrl_dual_agent.py
+- skillmimic/learning/hrl_dual_players.py
+- skillmimic/env/tasks/skillmimic_dual.py
+- skillmimic/env/tasks/hrl_dual_humanoid.py
+- skillmimic/data/cfg/hrl_dual_humanoid.yaml
+- skillmimic/data/cfg/train/rlg/hrl_dual_humanoid.yaml
+
+Dual-related documentation and notes:
+
+- PHASE1_CHANGES_SUMMARY_FOR_REVIEW.md
+- PHASE2_COOP_REWARD_CHANGES.md
+- PHASE3_GUIDANCE_PENALTY_CHANGES.md
+- archive/PROGRESS_SUMMARY_FOR_GEMINI.md
+- archive/SkillMimic 双人协作分步实施指令.txt
+- archive/SkillMimic双人协作优化指南.txt
+
+(Numerous log files under `inference_log/` also contain dual-related runs, but
+are not listed exhaustively here.)
+
+
+------------------------------------------------------------
+2. Python files created or modified for dual setup
+------------------------------------------------------------
+
+The following `.py` files either implement dual-specific logic or were edited
+to integrate the dual HRL setup:
+
+- skillmimic/run.py
+- skillmimic/utils/parse_task.py
+- skillmimic/utils/config.py
+- skillmimic/learning/hrl_dual_agent.py
+- skillmimic/learning/hrl_dual_players.py
+- skillmimic/env/tasks/skillmimic_dual.py
+- skillmimic/env/tasks/hrl_dual_humanoid.py
+
+
+------------------------------------------------------------
+3. YAML files created or modified for dual setup
+------------------------------------------------------------
+
+These `.yaml` configs define the dual environment and training setup:
+
+- skillmimic/data/cfg/hrl_dual_humanoid.yaml
+- skillmimic/data/cfg/train/rlg/hrl_dual_humanoid.yaml
+
+
+------------------------------------------------------------
+4. How to use this index
+------------------------------------------------------------
+
+- For any future Agent / tooling, this file can be used as the entry point to
+  locate all dual-related code and configs.
+- Sections 2 and 3 explicitly list the Python and YAML files that were either
+  newly created or modified to support the dual HRL pass-and-catch framework.
+

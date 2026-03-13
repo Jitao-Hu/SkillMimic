@@ -1,0 +1,85 @@
+HRL-CTDE (Centralized Training Decentralized Execution) Files Index
+====================================================================
+
+This file lists all files created or modified for the CTDE framework.
+The old dual framework files (listed in dual_files_index.txt) are preserved.
+
+------------------------------------------------------------
+1. NEW Python files (CTDE-specific)
+------------------------------------------------------------
+
+- skillmimic/env/tasks/hrl_ctde_humanoid.py
+    Class: HRLCTDEHumanoid (extends SkillMimicDualHumanoid)
+    Symmetric per-agent observations, role encoding, combined obs_buf.
+
+- skillmimic/learning/hrl_ctde_network_builder.py
+    Class: HRLCTDEBuilder / HRLCTDEBuilder.Network
+    Factorized policy: shared actor MLP, outer-sum joint logits,
+    centralized critic on combined obs.
+
+- skillmimic/learning/hrl_ctde_models.py
+    Class: ModelHRLCTDE
+    Model wrapper for the CTDE factorized discrete policy.
+
+- skillmimic/learning/hrl_ctde_agent.py
+    Class: HRLCTDEAgent (extends HRLAgentDiscrete)
+    Decodes joint action (0-8) → (skill_A, skill_B),
+    runs dual LLC, guidance penalty, skill monitor.
+
+- skillmimic/learning/hrl_ctde_players.py
+    Class: HRLCTDEPlayer (extends HRLPlayerDiscrete)
+    Inference player: factorized action decoding, dual LLC.
+
+------------------------------------------------------------
+2. NEW YAML configs
+------------------------------------------------------------
+
+- skillmimic/data/cfg/hrl_ctde_humanoid.yaml
+    Environment config (goalSize=15, symmetric task obs).
+
+- skillmimic/data/cfg/train/rlg/hrl_ctde_humanoid.yaml
+    Training config (latent_dim=9, separate control_mapping_a/_b,
+    per_agent_obs_size=934, skills_per_agent=3).
+
+------------------------------------------------------------
+3. MODIFIED files
+------------------------------------------------------------
+
+- skillmimic/run.py
+    Added imports and registration for hrl_ctde agent, player, model, network.
+
+- skillmimic/utils/parse_task.py
+    Added import for HRLCTDEHumanoid.
+
+------------------------------------------------------------
+4. Documentation
+------------------------------------------------------------
+
+- hrl_ctde_phase_plan.md
+    Architecture design, phase plan, comparison with old hrl_dual.
+
+- ctde_files_index.txt  (this file)
+
+------------------------------------------------------------
+5. How to train
+------------------------------------------------------------
+
+python skillmimic/run.py \
+  --task HRLCTDEHumanoid \
+  --cfg_env skillmimic/data/cfg/hrl_ctde_humanoid.yaml \
+  --cfg_train skillmimic/data/cfg/train/rlg/hrl_ctde_humanoid.yaml \
+  --motion_file skillmimic/data/motions/BallPlay-M/pass \
+  --checkpoint skillmimic/data/models/mixedskills/nn/skillmimic_llc.pth \
+  --headless --num_envs 512
+
+------------------------------------------------------------
+6. How to test / play
+------------------------------------------------------------
+
+python skillmimic/run.py \
+  --task HRLCTDEHumanoid \
+  --cfg_env skillmimic/data/cfg/hrl_ctde_humanoid.yaml \
+  --cfg_train skillmimic/data/cfg/train/rlg/hrl_ctde_humanoid.yaml \
+  --motion_file skillmimic/data/motions/BallPlay-M/pass \
+  --checkpoint <path_to_trained_ctde_checkpoint> \
+  --test --num_envs 4
