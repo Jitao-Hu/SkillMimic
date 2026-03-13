@@ -38,6 +38,12 @@ class HRLDualPlayer(HRLPlayerDiscrete):
         
         super().__init__(config)
         
+        # Optional: override number of test episodes from config.
+        max_test_episodes = config.get("max_test_episodes", 0)
+        if isinstance(max_test_episodes, int) and max_test_episodes > 0:
+            print(f"[HRLDualPlayer] Using max_test_episodes={max_test_episodes}")
+            self.games_num = max_test_episodes
+        
         # Verify and update from actual env
         actual_size = self.env.task._num_actions
         if self._single_action_size != actual_size:

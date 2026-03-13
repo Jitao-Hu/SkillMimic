@@ -291,6 +291,11 @@ def main():
     if args.state_init.lower() != "random":
         cfg["env"]["stateInit"] = args.state_init
 
+    # If requested, limit number of test episodes for players.
+    # This only affects --test / --play mode, not training.
+    if getattr(args, "test_episodes", 0) > 0:
+        cfg_train["params"]["config"]["max_test_episodes"] = args.test_episodes
+
     # Create default directories for weights and statistics
     cfg_train['params']['config']['train_dir'] = args.output_path
     

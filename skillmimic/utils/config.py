@@ -189,6 +189,8 @@ def get_args(benchmark=False):
             "help": "Run trained policy, no training"},
         {"name": "--play", "action": "store_true", "default": False,
             "help": "Run trained policy, the same as test, can be used only by rl_games RL library"},
+        {"name": "--test_episodes", "type": int, "default": 0,
+            "help": "Number of test episodes to run in --test/--play mode (0 = use default/infinite)"},
         {"name": "--resume", "type": int, "default": 0,
             "help": "Resume training or start testing from a checkpoint"},
         {"name": "--checkpoint", "type": str, "default": "Base",
