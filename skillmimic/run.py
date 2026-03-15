@@ -56,6 +56,11 @@ from learning import hrl_network_builder
 from learning import hrl_dual_agent
 from learning import hrl_dual_players 
 
+from learning import hrl_ctde_agent
+from learning import hrl_ctde_players
+from learning import hrl_ctde_models
+from learning import hrl_ctde_network_builder
+
 # from learning import amp_agent
 # from learning import amp_players
 # from learning import amp_models
@@ -210,6 +215,12 @@ def build_alg_runner(algo_observer):
     # HRL Dual Humanoid (Pass-and-Catch)
     runner.algo_factory.register_builder('hrl_dual', lambda **kwargs : hrl_dual_agent.HRLDualAgent(**kwargs))
     runner.player_factory.register_builder('hrl_dual', lambda **kwargs : hrl_dual_players.HRLDualPlayer(**kwargs))
+
+    # HRL-CTDE Dual Humanoid (Centralized Training, Decentralized Execution)
+    runner.algo_factory.register_builder('hrl_ctde', lambda **kwargs : hrl_ctde_agent.HRLCTDEAgent(**kwargs))
+    runner.player_factory.register_builder('hrl_ctde', lambda **kwargs : hrl_ctde_players.HRLCTDEPlayer(**kwargs))
+    runner.model_builder.model_factory.register_builder('hrl_ctde', lambda network, **kwargs : hrl_ctde_models.ModelHRLCTDE(network))
+    runner.model_builder.network_factory.register_builder('hrl_ctde', lambda **kwargs : hrl_ctde_network_builder.HRLCTDEBuilder())
 
     # runner.algo_factory.register_builder('amp', lambda **kwargs : amp_agent.AMPAgent(**kwargs))
     # runner.player_factory.register_builder('amp', lambda **kwargs : amp_players.AMPPlayerContinuous(**kwargs))

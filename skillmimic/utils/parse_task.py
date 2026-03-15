@@ -34,6 +34,7 @@ from env.tasks.hrl_heading_easy import HRLHeadingEasy
 from env.tasks.hrl_throwing import HRLThrowing
 from env.tasks.hrl_scoring_layup import HRLScoringLayup
 from env.tasks.hrl_dual_humanoid import HRLDualHumanoid
+from env.tasks.hrl_ctde_humanoid import HRLCTDEHumanoid
 
 from isaacgym import rlgpu
 
