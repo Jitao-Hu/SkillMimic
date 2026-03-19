@@ -1,1 +1,5 @@
+tmux
+
 tmux attach-session -t skillmimic_training
+tmux rename-session -t skillmimic_training ctde_training
+tmux new -s
