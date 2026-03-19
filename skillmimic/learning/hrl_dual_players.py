@@ -35,6 +35,15 @@ class HRLDualPlayer(HRLPlayerDiscrete):
         # Number of actions per humanoid (156 DOFs) - set before super().__init__
         # because _build_llc_agent_config is called during parent init
         self._single_action_size = 156  # Will be verified after env init
+
+        # Trajectory predictor config (before super for _build_net_config)
+        self._traj_pred_history = int(config.get("traj_pred_history", 0))
+        self._traj_pred_horizons = config.get("traj_pred_horizons", [])
+        self._traj_pred_hidden = int(config.get("traj_pred_hidden", 64))
+        self._traj_pred_type = config.get("traj_pred_type", "gru")
+        self._use_traj_pred = (
+            self._traj_pred_history > 0 and len(self._traj_pred_horizons) > 0
+        )
         
         super().__init__(config)
         
@@ -55,6 +64,28 @@ class HRLDualPlayer(HRLPlayerDiscrete):
         print(f"[HRLDualPlayer] Control mapping: {self._control_mapping}")
         
         return
+
+    # ------------------------------------------------------------------
+    # Inject trajectory predictor config into network builder
+    # ------------------------------------------------------------------
+
+    def _build_net_config(self):
+        config = super()._build_net_config()
+        if self._use_traj_pred:
+            task_obs_size = self.env.task.get_task_obs_size()
+            ball_history_offset_a = 823 + 15 + 15 + task_obs_size
+            ball_history_offset_b = ball_history_offset_a + self._traj_pred_history * 6
+            config["traj_pred_history"] = self._traj_pred_history
+            config["traj_pred_horizons"] = self._traj_pred_horizons
+            config["traj_pred_hidden"] = self._traj_pred_hidden
+            config["traj_pred_type"] = self._traj_pred_type
+            config["ball_history_offset_a"] = ball_history_offset_a
+            config["ball_history_offset_b"] = ball_history_offset_b
+        return config
+
+    # ------------------------------------------------------------------
+    # LLC action computation
+    # ------------------------------------------------------------------
 
     def _compute_llc_action(self, obs, actions):
         """

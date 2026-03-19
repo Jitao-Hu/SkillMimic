@@ -80,4 +80,11 @@ params:
     control_mapping: [4, 13, 31, 3, 13, 31]
     # Mapping: 0->pass, 1->run, 2->idle, 3->catch, 4->run, 5->idle
 
+    # Trajectory predictor (auxiliary ball trajectory prediction)
+    traj_pred_history: 10
+    traj_pred_horizons: [15, 30, 45]
+    traj_pred_hidden: 64
+    traj_pred_type: gru
+    traj_pred_loss_weight: 0.1
+
     resume_from: None

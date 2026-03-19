@@ -29,6 +29,8 @@ import learning.skillmimic_models as skillmimic_models
 import learning.skillmimic_network_builder as skillmimic_network_builder
 import learning.skillmimic_agent as skillmimic_agent
 from learning.hrl_agent_discrete import HRLAgentDiscrete
+from utils import torch_utils
+from isaacgym.torch_utils import quat_rotate
 
 from tensorboardX import SummaryWriter
 
@@ -54,6 +56,17 @@ class HRLDualAgent(HRLAgentDiscrete):
         self._holding_contact_thresh = float(config.get('holding_contact_thresh', 1.0))
         self._ball_to_b_speed_thresh = float(config.get('ball_to_b_speed_thresh', 0.5))
 
+        # Trajectory predictor config (before super for _build_net_config)
+        self._traj_pred_history = int(config.get("traj_pred_history", 0))
+        self._traj_pred_horizons = config.get("traj_pred_horizons", [])
+        self._traj_pred_hidden = int(config.get("traj_pred_hidden", 64))
+        self._traj_pred_type = config.get("traj_pred_type", "gru")
+        self._traj_pred_loss_weight = float(config.get("traj_pred_loss_weight", 0.0))
+        self._use_traj_pred = (
+            self._traj_pred_history > 0 and len(self._traj_pred_horizons) > 0
+        )
+        self._collecting_traj_data = False
+
         super().__init__(base_name, config)
         
         # Verify and update from actual env
@@ -67,6 +80,8 @@ class HRLDualAgent(HRLAgentDiscrete):
         print(f"[HRLDualAgent] Control mapping: {self._control_mapping}")
         print(f"[HRLDualAgent] Latent dim: {self._latent_dim}")
         print(f"[HRLDualAgent] Guidance penalty weight: {self._guidance_penalty_weight}")
+        print(f"[HRLDualAgent] traj_pred={self._use_traj_pred}  history={self._traj_pred_history}")
+        print(f"[HRLDualAgent] traj_pred_horizons={self._traj_pred_horizons}  loss_w={self._traj_pred_loss_weight}")
 
         # Skill monitor (lightweight telemetry for HLC skill choices).
         # Logs aggregated stats every N HLC steps to TensorBoard (and optionally prints).
@@ -355,6 +370,16 @@ class HRLDualAgent(HRLAgentDiscrete):
         terminate[terminate_count > 0] = 1.0
         infos['terminate'] = terminate
 
+        # Collect ball/root data for trajectory prediction auxiliary loss
+        if self._collecting_traj_data and self.is_tensor_obses:
+            task = self.vec_env.env.task
+            self._tp_buf_ball.append(task._target_states[:, 0:3].clone())
+            self._tp_buf_pos_a.append(task._humanoid_root_states[:, 0:3].clone())
+            self._tp_buf_rot_a.append(task._humanoid_root_states[:, 3:7].clone())
+            self._tp_buf_pos_b.append(task._humanoid_b_root_states[:, 0:3].clone())
+            self._tp_buf_rot_b.append(task._humanoid_b_root_states[:, 3:7].clone())
+            self._tp_buf_dones.append(dones.clone())
+
         if self.is_tensor_obses:
             if self.value_size == 1:
                 rewards = rewards.unsqueeze(1)
@@ -451,16 +476,230 @@ class HRLDualAgent(HRLAgentDiscrete):
 
         return config
 
+    # ------------------------------------------------------------------
+    # Override: inject trajectory predictor config into model builder
+    # ------------------------------------------------------------------
+
+    def _build_net_config(self):
+        config = super()._build_net_config()
+        if self._use_traj_pred:
+            task_obs_size = self.vec_env.env.task.get_task_obs_size()
+            ball_history_offset_a = 823 + 15 + 15 + task_obs_size
+            ball_history_offset_b = ball_history_offset_a + self._traj_pred_history * 6
+            config["traj_pred_history"] = self._traj_pred_history
+            config["traj_pred_horizons"] = self._traj_pred_horizons
+            config["traj_pred_hidden"] = self._traj_pred_hidden
+            config["traj_pred_type"] = self._traj_pred_type
+            config["ball_history_offset_a"] = ball_history_offset_a
+            config["ball_history_offset_b"] = ball_history_offset_b
+        return config
+
+    # ------------------------------------------------------------------
+    # play_steps / prepare_dataset / calc_gradients overrides for aux loss
+    # ------------------------------------------------------------------
+
+    def play_steps(self):
+        if self._use_traj_pred and self._traj_pred_loss_weight > 0:
+            self._collecting_traj_data = True
+            self._tp_buf_ball = []
+            self._tp_buf_pos_a = []
+            self._tp_buf_rot_a = []
+            self._tp_buf_pos_b = []
+            self._tp_buf_rot_b = []
+            self._tp_buf_dones = []
+
+        batch_dict = super().play_steps()
+
+        if self._use_traj_pred and self._traj_pred_loss_weight > 0:
+            self._collecting_traj_data = False
+            targets_a, targets_b, valid = self._compute_traj_targets()
+            batch_dict["traj_targets_a"] = a2c_common.swap_and_flatten01(targets_a)
+            batch_dict["traj_targets_b"] = a2c_common.swap_and_flatten01(targets_b)
+            batch_dict["traj_valid"] = a2c_common.swap_and_flatten01(valid)
+
+        return batch_dict
+
+    def _compute_traj_targets(self):
+        """Build ground-truth future ball position targets from the rollout buffer."""
+        H_count = len(self._traj_pred_horizons)
+        T = len(self._tp_buf_ball)  # horizon_length
+        N = self._tp_buf_ball[0].size(0)  # num_envs
+        device = self._tp_buf_ball[0].device
+
+        horizons_hlc = [h // max(self._llc_steps, 1) for h in self._traj_pred_horizons]
+        max_h = max(horizons_hlc)
+
+        ball_pos = torch.stack(self._tp_buf_ball, dim=0)   # [T, N, 3]
+        pos_a = torch.stack(self._tp_buf_pos_a, dim=0)     # [T, N, 3]
+        rot_a = torch.stack(self._tp_buf_rot_a, dim=0)     # [T, N, 4]
+        pos_b = torch.stack(self._tp_buf_pos_b, dim=0)
+        rot_b = torch.stack(self._tp_buf_rot_b, dim=0)
+        dones = torch.stack(self._tp_buf_dones, dim=0)     # [T, N]
+
+        targets_a = torch.zeros(T, N, H_count * 3, device=device)
+        targets_b = torch.zeros(T, N, H_count * 3, device=device)
+        valid = torch.ones(T, N, 1, device=device)
+
+        for t in range(T):
+            if t + max_h >= T:
+                valid[t] = 0.0
+                continue
+
+            done_in_range = dones[t + 1 : t + max_h + 1].any(dim=0)  # [N]
+            valid[t, done_in_range] = 0.0
+
+            hinv_a = torch_utils.calc_heading_quat_inv(rot_a[t])
+            hinv_b = torch_utils.calc_heading_quat_inv(rot_b[t])
+
+            for i, h in enumerate(horizons_hlc):
+                fut_ball = ball_pos[t + h]  # [N, 3]
+                targets_a[t, :, i * 3 : (i + 1) * 3] = quat_rotate(
+                    hinv_a, fut_ball - pos_a[t]
+                )
+                targets_b[t, :, i * 3 : (i + 1) * 3] = quat_rotate(
+                    hinv_b, fut_ball - pos_b[t]
+                )
+
+        return targets_a, targets_b, valid
+
+    def prepare_dataset(self, batch_dict):
+        super().prepare_dataset(batch_dict)
+        if self._use_traj_pred and self._traj_pred_loss_weight > 0:
+            tgt_a = batch_dict.get("traj_targets_a")
+            tgt_b = batch_dict.get("traj_targets_b")
+            tgt_v = batch_dict.get("traj_valid")
+            if tgt_a is not None:
+                self.dataset.values_dict["traj_targets_a"] = tgt_a
+                self.dataset.values_dict["traj_targets_b"] = tgt_b
+                self.dataset.values_dict["traj_valid"] = tgt_v
+
+    def calc_gradients(self, input_dict):
+        self.set_train()
+
+        value_preds_batch = input_dict['old_values']
+        old_action_log_probs_batch = input_dict['old_logp_actions']
+        advantage = input_dict['advantages']
+        return_batch = input_dict['returns']
+        logits_batch = input_dict['logits']
+        actions_batch = input_dict['actions']
+        obs_batch = input_dict['obs']
+        obs_batch = self._preproc_obs(obs_batch)
+
+        lr = self.last_lr
+        kl = 1.0
+        lr_mul = 1.0
+        curr_e_clip = lr_mul * self.e_clip
+
+        batch_dict = {
+            'is_train': True,
+            'prev_actions': actions_batch,
+            'obs': obs_batch,
+        }
+
+        rnn_masks = None
+        if self.is_rnn:
+            rnn_masks = input_dict['rnn_masks']
+            batch_dict['rnn_states'] = input_dict['rnn_states']
+            batch_dict['seq_length'] = self.seq_len
+
+        with torch.cuda.amp.autocast(enabled=self.mixed_precision):
+            res_dict = self.model(batch_dict)
+            action_log_probs = res_dict['prev_neglogp']
+            values = res_dict['values']
+            entropy = res_dict['entropy']
+            now_logits = res_dict['logits']
+
+            a_info = self._actor_loss(
+                old_action_log_probs_batch, action_log_probs, advantage, curr_e_clip
+            )
+            a_loss = a_info['actor_loss']
+
+            c_info = self._critic_loss(
+                value_preds_batch, values, curr_e_clip, return_batch, self.clip_value
+            )
+            c_loss = c_info['critic_loss']
+
+            a_loss = torch.mean(a_loss)
+            c_loss = torch.mean(c_loss)
+            entropy = torch.mean(entropy)
+
+            loss = (
+                a_loss
+                + self.critic_coef * c_loss
+                - self.entropy_coef * entropy
+            )
+
+            # Auxiliary trajectory prediction loss
+            traj_loss = torch.tensor(0.0, device=loss.device)
+            if (
+                self._use_traj_pred
+                and self._traj_pred_loss_weight > 0
+                and "traj_targets_a" in input_dict
+            ):
+                net = self.model.a2c_network
+                pred_a = getattr(net, "_last_pred_a", None)
+                pred_b = getattr(net, "_last_pred_b", None)
+                tgt_a = input_dict["traj_targets_a"]
+                tgt_b = input_dict["traj_targets_b"]
+                tgt_valid = input_dict["traj_valid"].squeeze(-1)  # [B]
+
+                if pred_a is not None and pred_b is not None:
+                    mse_a = ((pred_a - tgt_a) ** 2).mean(dim=-1)
+                    mse_b = ((pred_b - tgt_b) ** 2).mean(dim=-1)
+                    per_sample = (mse_a + mse_b) * 0.5 * tgt_valid
+                    valid_count = tgt_valid.sum().clamp(min=1.0)
+                    traj_loss = per_sample.sum() / valid_count
+                    loss = loss + self._traj_pred_loss_weight * traj_loss
+
+            a_clip_frac = torch.mean(a_info['actor_clipped'].float())
+            a_info['actor_loss'] = a_loss
+            a_info['actor_clip_frac'] = a_clip_frac
+
+            if self.multi_gpu:
+                self.optimizer.zero_grad()
+            else:
+                for param in self.model.parameters():
+                    param.grad = None
+
+        self.scaler.scale(loss).backward()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+
+        with torch.no_grad():
+            reduce_kl = not self.is_rnn
+            dist_before = torch.distributions.Categorical(logits=logits_batch)
+            dist_now = torch.distributions.Categorical(logits=now_logits)
+            kl_dist = torch.distributions.kl_divergence(dist_before, dist_now).mean()
+            if reduce_kl:
+                kl_dist = kl_dist.mean()
+
+        self.train_result = {
+            'entropy': entropy,
+            'kl': kl_dist,
+            'last_lr': self.last_lr,
+            'lr_mul': lr_mul,
+        }
+        self.train_result.update(a_info)
+        self.train_result.update(c_info)
+
+        if self._use_traj_pred and self._traj_pred_loss_weight > 0:
+            self.train_result["traj_pred_loss"] = traj_loss.detach()
+            if hasattr(self, "writer") and self.writer is not None:
+                self.writer.add_scalar(
+                    "losses/traj_pred",
+                    traj_loss.item(),
+                    self.epoch_num,
+                )
+
+        return
+
+    # ------------------------------------------------------------------
+    # LLC observation extraction
+    # ------------------------------------------------------------------
+
     def _extract_llc_obs(self, obs):
         """
         Extract LLC-compatible observations from HRL dual humanoid observations.
-        
-        HRL dual obs structure (929 when goalSize=12):
-        - humanoid_obs: 823 dims
-        - obj_obs: 15 dims
-        - other_humanoid_obs: 15 dims (NOT needed by LLC)
-        - task_obs: goalSize dims (NOT needed by LLC, default 12)
-        - condition: 64 dims
         
         LLC needs (838):
         - humanoid_obs: 823 dims

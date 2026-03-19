@@ -48,6 +48,7 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
         self._enable_task_obs = cfg["env"].get("enableTaskObs", True)
         # Phase 1: default task observation size is 12 (A:6 + B:6)
         self.goal_size = cfg["env"].get("goalSize", 12)
+        self._ball_history_len = cfg["env"].get("ballHistoryLength", 0)
         
         super().__init__(cfg=cfg,
                          sim_params=sim_params,
@@ -65,9 +66,19 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
             self.cfg["env"]["terminationHeight"], 
             device=self.device, dtype=torch.float
         )
+
+        # Ball history buffers: [num_envs, T, 6] (pos + vel in agent heading frame)
+        T = self._ball_history_len
+        if T > 0:
+            self._ball_history_a = torch.zeros(
+                (self.num_envs, T, 6), device=self.device, dtype=torch.float
+            )
+            self._ball_history_b = torch.zeros(
+                (self.num_envs, T, 6), device=self.device, dtype=torch.float
+            )
         
         print(f"[HRLDualHumanoid] HRL environment initialized")
-        print(f"[HRLDualHumanoid] Task obs enabled: {self._enable_task_obs}")
+        print(f"[HRLDualHumanoid] Task obs enabled: {self._enable_task_obs}  ball_history={T}")
         
         return
 
@@ -94,6 +105,8 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
             + obj_obs (15)
             + other_humanoid_obs (15)
             + optional task_obs (goal_size when enabled)
+            + ball_history_a (ball_history_len * 6)
+            + ball_history_b (ball_history_len * 6)
             + condition embedding (64)
         """
         humanoid_obs_size = self._num_obs
@@ -104,6 +117,8 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
         
         if self._enable_task_obs:
             obs_size += self.goal_size
+        
+        obs_size += self._ball_history_len * 6 * 2  # A and B ball histories
         
         obs_size += self.condition_size
         return obs_size
@@ -157,6 +172,17 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
         if self._enable_task_obs:
             task_obs = self._compute_task_obs(env_ids)
             obs = torch.cat([obs, task_obs], dim=-1)
+
+        # Add ball history (A and B)
+        if self._ball_history_len > 0:
+            self._update_ball_history(env_ids)
+            if env_ids is None:
+                bh_a = self._ball_history_a.reshape(self.num_envs, -1)
+                bh_b = self._ball_history_b.reshape(self.num_envs, -1)
+            else:
+                bh_a = self._ball_history_a[env_ids].reshape(len(env_ids), -1)
+                bh_b = self._ball_history_b[env_ids].reshape(len(env_ids), -1)
+            obs = torch.cat([obs, bh_a, bh_b], dim=-1)
         
         # Add condition embedding
         if env_ids is None:
@@ -177,6 +203,55 @@ class HRLDualHumanoid(SkillMimicDualHumanoid):
         Shape: [num_envs, 838] for each.
         """
         return self._llc_obs_a, self._llc_obs_b
+
+    # ------------------------------------------------------------------
+    # Ball history buffer
+    # ------------------------------------------------------------------
+
+    def _update_ball_history(self, env_ids=None):
+        """Shift history left and append current ball state in each agent's heading frame."""
+        if env_ids is None:
+            root_rot_a = self._humanoid_root_states[:, 3:7]
+            root_rot_b = self._humanoid_b_root_states[:, 3:7]
+            ball_pos = self._target_states[:, 0:3]
+            ball_vel = self._target_states[:, 7:10]
+        else:
+            root_rot_a = self._humanoid_root_states[env_ids, 3:7]
+            root_rot_b = self._humanoid_b_root_states[env_ids, 3:7]
+            ball_pos = self._target_states[env_ids, 0:3]
+            ball_vel = self._target_states[env_ids, 7:10]
+
+        heading_inv_a = torch_utils.calc_heading_quat_inv(root_rot_a)
+        heading_inv_b = torch_utils.calc_heading_quat_inv(root_rot_b)
+
+        bp_a = quat_rotate(heading_inv_a, ball_pos)
+        bv_a = quat_rotate(heading_inv_a, ball_vel)
+        bp_b = quat_rotate(heading_inv_b, ball_pos)
+        bv_b = quat_rotate(heading_inv_b, ball_vel)
+
+        frame_a = torch.cat([bp_a, bv_a], dim=-1)  # [N, 6]
+        frame_b = torch.cat([bp_b, bv_b], dim=-1)
+
+        if env_ids is None:
+            self._ball_history_a[:, :-1] = self._ball_history_a[:, 1:].clone()
+            self._ball_history_a[:, -1] = frame_a
+            self._ball_history_b[:, :-1] = self._ball_history_b[:, 1:].clone()
+            self._ball_history_b[:, -1] = frame_b
+        else:
+            self._ball_history_a[env_ids, :-1] = self._ball_history_a[env_ids, 1:].clone()
+            self._ball_history_a[env_ids, -1] = frame_a
+            self._ball_history_b[env_ids, :-1] = self._ball_history_b[env_ids, 1:].clone()
+            self._ball_history_b[env_ids, -1] = frame_b
+
+    def _reset_env_tensors(self, env_ids):
+        super()._reset_env_tensors(env_ids)
+        if self._ball_history_len > 0:
+            self._ball_history_a[env_ids] = 0.0
+            self._ball_history_b[env_ids] = 0.0
+
+    # ------------------------------------------------------------------
+    # Task observations
+    # ------------------------------------------------------------------
 
     def _compute_task_obs(self, env_ids=None):
         """
