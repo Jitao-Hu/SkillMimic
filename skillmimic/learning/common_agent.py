@@ -180,6 +180,10 @@ class CommonAgent(a2c_continuous.A2CAgent):
                 if epoch_num > self.max_epochs:
                     self.save(model_output_file)
                     print('MAX EPOCHS NUM!')
+                    self._run_results = {
+                        'last_mean_rewards': self.last_mean_rewards,
+                        'epoch_num': epoch_num,
+                    }
                     return self.last_mean_rewards, epoch_num
 
                 if epoch_num % (5000) == 0: #self.max_epochs // 4

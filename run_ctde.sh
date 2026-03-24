@@ -11,5 +11,6 @@ CUDA_VISIBLE_DEVICES=0 python skillmimic/run.py --test --task HRLCTDEHumanoid --
   --motion_file skillmimic/data/motions/BallPlay-M/pass \
   --checkpoint output/SkillMimicCTDE_20260313-18-06-00/nn/SkillMimicCTDE.pth \
   --test_episodes 500 \
-  # --save_images
   --headless
+  # --save_images
+  

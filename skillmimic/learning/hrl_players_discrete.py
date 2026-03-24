@@ -196,11 +196,19 @@ class HRLPlayerDiscrete(common_player_discrete.CommonPlayerDiscrete):
                 done_indices = done_indices[:, 0]
 
         print(sum_rewards)
+        avg_reward = sum_rewards / games_played * n_game_life if games_played > 0 else 0
+        avg_steps = sum_steps / games_played * n_game_life if games_played > 0 else 0
         if print_game_res:
-            print('av reward:', sum_rewards / games_played * n_game_life, 'av steps:', sum_steps / games_played * n_game_life, 'winrate:', sum_game_res / games_played * n_game_life)
+            print('av reward:', avg_reward, 'av steps:', avg_steps, 'winrate:', sum_game_res / games_played * n_game_life)
         else:
-            print('av reward:', sum_rewards / games_played * n_game_life, 'av steps:', sum_steps / games_played * n_game_life)
+            print('av reward:', avg_reward, 'av steps:', avg_steps)
 
+        self._run_results = {
+            'avg_reward': avg_reward,
+            'avg_steps': avg_steps,
+            'games_played': games_played,
+            'sum_rewards': sum_rewards,
+        }
         return
 
     def env_step(self, env, obs_dict, actions):

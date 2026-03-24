@@ -27,11 +27,13 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import os
+import signal
 from datetime import datetime
 # os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 from utils.config import set_np_formatting, set_seed, get_args, parse_sim_params, load_cfg
 from utils.parse_task import parse_task
+from utils.run_logger import RunLogger, RunInterrupted
 
 from rl_games.algos_torch import players
 from rl_games.algos_torch import torch_ext
@@ -314,10 +316,75 @@ def main():
 
     algo_observer = RLGPUAlgoObserver()
 
-    runner = build_alg_runner(algo_observer)
-    runner.load(cfg_train)
-    runner.reset()
-    runner.run(vargs)
+    run_logger = RunLogger(args, cfg, cfg_train)
+    run_logger.start_run()
+
+    runner = None
+    exit_status = 'completed'
+    error_detail = ''
+    pending_exc = None
+
+    def _handle_signal(signum, frame):
+        raise RunInterrupted(signum)
+
+    old_sigint = signal.signal(signal.SIGINT, _handle_signal)
+    old_sigterm = signal.signal(signal.SIGTERM, _handle_signal)
+    try:
+        runner = build_alg_runner(algo_observer)
+        runner.load(cfg_train)
+        runner.reset()
+
+        # Patch factories so RunLogger can access agent/player after runner.run()
+        _orig_algo_create = runner.algo_factory.create
+        def _saving_algo_create(*a, **kw):
+            agent = _orig_algo_create(*a, **kw)
+            runner._last_agent = agent
+            return agent
+        runner.algo_factory.create = _saving_algo_create
+
+        _orig_player_create = runner.player_factory.create
+        def _saving_player_create(*a, **kw):
+            player = _orig_player_create(*a, **kw)
+            runner._last_player = player
+            return player
+        runner.player_factory.create = _saving_player_create
+
+        runner.run(vargs)
+    except RunInterrupted as e:
+        if e.signum == signal.SIGTERM:
+            exit_status = 'sigterm'
+        elif e.signum == signal.SIGINT:
+            exit_status = 'keyboard_interrupt'
+        else:
+            exit_status = 'signal_{}'.format(e.signum)
+        error_detail = str(e)
+        pending_exc = e
+    except KeyboardInterrupt as e:
+        exit_status = 'keyboard_interrupt'
+        error_detail = 'KeyboardInterrupt'
+        pending_exc = e
+    except SystemExit as e:
+        exit_status = 'system_exit'
+        error_detail = repr(e.code)
+        pending_exc = e
+    except BaseException as e:
+        exit_status = 'error'
+        error_detail = repr(e)
+        pending_exc = e
+    finally:
+        try:
+            signal.signal(signal.SIGINT, old_sigint)
+            signal.signal(signal.SIGTERM, old_sigterm)
+        except (ValueError, OSError):
+            pass
+        run_logger.finish_run(
+            runner,
+            exit_status=exit_status,
+            error_detail=error_detail,
+        )
+
+    if pending_exc is not None:
+        raise pending_exc
 
     return
 
