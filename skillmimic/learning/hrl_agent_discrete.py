@@ -78,7 +78,7 @@ class HRLAgentDiscrete(common_agent_discrete.CommonAgentDiscrete):
         return
 
     def train(self):
-        if self.resume_from != 'None':
+        if self.resume_from not in (None, '', 'None'):
             self.restore(self.resume_from)
         super().train()
         
