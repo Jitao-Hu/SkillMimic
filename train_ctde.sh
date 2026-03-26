@@ -13,5 +13,5 @@ time CUDA_VISIBLE_DEVICES=1 python skillmimic/run.py \
   --motion_file skillmimic/data/motions/BallPlay-M/pass \
   --checkpoint skillmimic/data/models/mixedskills/nn/skillmimic_llc.pth \
   --resume_from output/SkillMimicCTDE_20260313-18-06-00/nn/SkillMimicCTDE.pth \
-  --max_iterations 5000 \
+  --max_iterations 8000 \
   --headless --num_envs 512 2>&1 | tee output/train_$(date +%Y%m%d_%H%M%S)_ctde.log
