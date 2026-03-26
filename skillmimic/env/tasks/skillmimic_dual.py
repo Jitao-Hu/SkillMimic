@@ -1317,8 +1317,8 @@ def compute_dual_humanoid_reset(reset_buf, progress_buf, rigid_body_pos_a, rigid
         
         # =========== 2. Non-Foot Ground Contact Check ===========
         # Check if any non-foot body part has significant ground contact
-        # Contact force threshold: 50N (indicates significant ground contact)
-        contact_threshold = 100.0
+        # Relaxed threshold for early termination to avoid overly aggressive resets.
+        contact_threshold = 150.0
         
         # Get contact forces for non-foot bodies
         non_foot_contact_a = contact_forces_a[:, non_foot_body_ids, :]  # [N, num_non_foot, 3]

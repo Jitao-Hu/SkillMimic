@@ -289,5 +289,5 @@ class RunLogger:
                     pass
             finally:
                 if fcntl is not None:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UNLOCK)
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
         print(f'[RunLogger] Results saved to {path} (exit_status={row.get("exit_status", "")})')
