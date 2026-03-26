@@ -55,7 +55,19 @@ March 24
     - In comparison， the ctde trained for 2000 epochs, has an inference avg reward of 14.75371979266405 for 500 epochs
     - Next step, for the current 5000-epoch-training- weight, run also 500 epochs and see how it goes
 
+March 25
+1. CTDE 5000 epochs has better avg reward than 2000 epochs training
+    - Hy1: would 8000 be better than 5000?
+2. HRL_DUAL 2000 epochs is slightly better than HRL_DUAL
+    - Hy2: would hrl_dual achieves a better avg reward than CTDE, when trainig has 5000 epochs too?
+
+Decision: verify Hy2 first, since I would like to know whether HRL_DUAL is better than CTDE regardless of training epochs. If Hy2 is right, then HRL_DUAL is simply better than CTDE at 5000 epochs.
+
+Hy3: Maybe CTDE can grow better, but that would need further experiments
+
 Arch, Training Epochs, Inference Epochs, Avg Reward
 HRL_DUAL, 2000, 500, 16.9
+HRL_DUAL, 2000, 500, 15.6
 CTDE, 5000, 100, 31.6
+CTDE, 5000, 500, 25.9
 CTDE, 2000, 500, 14.7
