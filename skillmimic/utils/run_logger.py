@@ -61,6 +61,7 @@ TRAINING_COLUMNS = [
 ]
 
 INFERENCE_COLUMNS = [
+    'trained_epochs',
     'run_id', 'pid', 'exit_status', 'exit_category', 'error_detail',
     'timestamp', 'task', 'algo', 'checkpoint',
     'test_episodes', 'num_envs', 'motion_file',
@@ -196,11 +197,15 @@ class RunLogger:
             avg_steps = _to_serializable(res.get('avg_steps', ''))
             total_episodes = _to_serializable(res.get('games_played', ''))
 
+        checkpoint_path = getattr(args, 'checkpoint', '')
+        trained_epochs = self._resolve_trained_epochs(checkpoint_path)
+
         return {
+            'trained_epochs': trained_epochs,
             'timestamp': end_dt.isoformat(timespec='seconds'),
             'task': args.task,
             'algo': algo_name,
-            'checkpoint': getattr(args, 'checkpoint', ''),
+            'checkpoint': checkpoint_path,
             'test_episodes': getattr(args, 'test_episodes', ''),
             'num_envs': cfg.get('env', {}).get('numEnvs', ''),
             'motion_file': cfg.get('env', {}).get('motion_file', ''),
@@ -215,6 +220,35 @@ class RunLogger:
             'duration_human': _format_duration(duration),
             'command': ' '.join(sys.argv),
         }
+
+    def _resolve_trained_epochs(self, checkpoint_path):
+        """
+        Best-effort lookup of training epochs for an inference checkpoint.
+        Priority: final_epoch -> max_epochs from logs/training_runs.csv.
+        """
+        if not checkpoint_path:
+            return ''
+
+        training_csv_path = os.path.join(self.log_dir, 'training_runs.csv')
+        if not os.path.exists(training_csv_path):
+            return ''
+
+        try:
+            with open(training_csv_path, 'r', newline='') as f:
+                rows = list(csv.DictReader(f))
+        except OSError:
+            return ''
+
+        # Scan newest-to-oldest and find exact path match first.
+        for row in reversed(rows):
+            if (row.get('checkpoint_path') or '') != checkpoint_path:
+                continue
+            final_epoch = (row.get('final_epoch') or '').strip()
+            if final_epoch:
+                return final_epoch
+            return (row.get('max_epochs') or '').strip()
+
+        return ''
 
     def _get_agent(self, runner):
         if runner is None:
