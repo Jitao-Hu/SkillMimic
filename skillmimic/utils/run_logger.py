@@ -49,23 +49,25 @@ def exit_category_for_status(exit_status):
 
 
 TRAINING_COLUMNS = [
-    'run_id', 'pid', 'exit_status', 'exit_category', 'error_detail',
-    'timestamp', 'task', 'algo', 'experiment_name',
-    'max_epochs', 'final_epoch', 'final_mean_reward',
+    'timestamp', 'exit_status', 'exit_category', 'error_detail',
+    'task', 'algo', 'final_mean_reward',
+    'final_epoch', 'max_epochs',
+    'experiment_name',
+    'checkpoint_path', 'resume_from',
     'num_envs', 'motion_file',
     'learning_rate', 'gamma', 'horizon_length', 'minibatch_size',
     'mini_epochs', 'entropy_coef', 'llc_steps', 'save_frequency',
-    'checkpoint_path', 'resume_from', 'seed', 'headless',
+    'run_id', 'pid',
+    'seed', 'headless',
     'start_time', 'end_time', 'duration_seconds', 'duration_human',
     'command', 'cfg_env_path', 'cfg_train_path', 'reward_weights',
 ]
 
 INFERENCE_COLUMNS = [
-    'trained_epochs',
-    'run_id', 'pid', 'exit_status', 'exit_category', 'error_detail',
-    'timestamp', 'task', 'algo', 'checkpoint',
-    'test_episodes', 'num_envs', 'motion_file',
-    'avg_reward', 'avg_steps', 'total_episodes',
+    'timestamp', 'trained_epochs', 'exit_status', 'exit_category',
+    'task', 'algo', 'avg_reward', 'avg_steps',
+    'checkpoint', 'test_episodes', 'num_envs', 'motion_file', 'total_episodes',
+    'run_id', 'pid', 'error_detail',
     'seed', 'headless',
     'start_time', 'end_time', 'duration_seconds', 'duration_human',
     'command',
