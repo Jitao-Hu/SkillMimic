@@ -289,17 +289,35 @@ def main():
     if args.ball_size!= 0.:
         cfg['env']['ballSize'] = args.ball_size
 
+    # Experiment directory naming.
+    # - Fresh run: create a timestamped experiment directory. If --experiment is
+    #   provided (and not "Base"), use it as the prefix to make runs easy to
+    #   identify while keeping timestamp uniqueness.
+    # - Resume: keep weights source from --resume_from. If --experiment is "Base"
+    #   (default), reuse the checkpoint's experiment dir (backward compatible).
+    #   Otherwise, write outputs to a NEW timestamped experiment dir to avoid
+    #   overwriting earlier checkpoints.
+    #
+    # Rationale: users often want intermediate checkpoints (2k/5k/8k) preserved.
+    config_name = cfg_train['params']['config'].get('name', 'SkillMimicDualHRL')
+    exp_prefix = getattr(args, "experiment", "Base")
+    if exp_prefix and exp_prefix != "Base":
+        config_name = exp_prefix
+    timestamped_name = config_name + datetime.now().strftime("_%Y%m%d-%H-%M-%S")
+
     if args.resume_from:
         cfg_train['params']['config']['resume_from'] = args.resume_from
-        # Use same experiment dir when resuming (extract from checkpoint path)
         exp_dir = os.path.basename(os.path.dirname(os.path.dirname(args.resume_from)))
-        cfg_train['params']['config']['full_experiment_name'] = exp_dir
+        if getattr(args, "experiment", "Base") == "Base":
+            # Backward-compatible default: reuse prior directory name.
+            cfg_train['params']['config']['full_experiment_name'] = exp_dir
+        else:
+            # User-specified experiment name gets its own directory.
+            cfg_train['params']['config']['full_experiment_name'] = (
+                args.experiment + datetime.now().strftime("_%Y%m%d-%H-%M-%S")
+            )
     else:
-        # Custom timestamp: YYYYMMDD-HH-MM-SS (includes year/month)
-        config_name = cfg_train['params']['config'].get('name', 'SkillMimicDualHRL')
-        cfg_train['params']['config']['full_experiment_name'] = (
-            config_name + datetime.now().strftime("_%Y%m%d-%H-%M-%S")
-        )
+        cfg_train['params']['config']['full_experiment_name'] = timestamped_name
 
     if args.state_init.lower() != "random":
         cfg["env"]["stateInit"] = args.state_init
