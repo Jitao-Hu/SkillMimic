@@ -714,6 +714,7 @@ class HRLCTDEAgent(HRLAgentDiscrete):
                 f"({stats['catch_success_rate']:.3f})"
             )
 
+        # Windowed training stats only. Inference uses HRL*Player.run() (no env_step here).
         task.reset_catch_stats()
 
 

@@ -66,6 +66,8 @@ TRAINING_COLUMNS = [
 INFERENCE_COLUMNS = [
     'timestamp', 'trained_epochs', 'exit_status', 'exit_category',
     'task', 'algo', 'avg_reward', 'avg_steps',
+    'catch_success_rate', 'pass_success_rate',
+    'catch_successes', 'catch_attempts', 'pass_successes', 'pass_attempts', 'catch_fails',
     'checkpoint', 'test_episodes', 'num_envs', 'motion_file', 'total_episodes',
     'run_id', 'pid', 'error_detail',
     'seed', 'headless',
@@ -121,7 +123,7 @@ class RunLogger:
             )
         else:
             row = {**base_meta, **self._build_inference_row(runner, end_dt, duration)}
-            self._append_csv(
+            self._append_csv_inference(
                 os.path.join(self.log_dir, 'inference_runs.csv'),
                 INFERENCE_COLUMNS,
                 row,
@@ -191,6 +193,13 @@ class RunLogger:
         avg_reward = ''
         avg_steps = ''
         total_episodes = ''
+        catch_success_rate = ''
+        pass_success_rate = ''
+        catch_successes = ''
+        catch_attempts = ''
+        pass_successes = ''
+        pass_attempts = ''
+        catch_fails = ''
 
         player = self._get_player(runner)
         if player is not None and hasattr(player, '_run_results'):
@@ -198,6 +207,13 @@ class RunLogger:
             avg_reward = _to_serializable(res.get('avg_reward', ''))
             avg_steps = _to_serializable(res.get('avg_steps', ''))
             total_episodes = _to_serializable(res.get('games_played', ''))
+            catch_success_rate = _to_serializable(res.get('catch_success_rate', ''))
+            pass_success_rate = _to_serializable(res.get('pass_success_rate', ''))
+            catch_successes = _to_serializable(res.get('catch_successes', ''))
+            catch_attempts = _to_serializable(res.get('catch_attempts', ''))
+            pass_successes = _to_serializable(res.get('pass_successes', ''))
+            pass_attempts = _to_serializable(res.get('pass_attempts', ''))
+            catch_fails = _to_serializable(res.get('catch_fails', ''))
 
         checkpoint_path = getattr(args, 'checkpoint', '')
         trained_epochs = self._resolve_trained_epochs(checkpoint_path)
@@ -213,6 +229,13 @@ class RunLogger:
             'motion_file': cfg.get('env', {}).get('motion_file', ''),
             'avg_reward': avg_reward,
             'avg_steps': avg_steps,
+            'catch_success_rate': catch_success_rate,
+            'pass_success_rate': pass_success_rate,
+            'catch_successes': catch_successes,
+            'catch_attempts': catch_attempts,
+            'pass_successes': pass_successes,
+            'pass_attempts': pass_attempts,
+            'catch_fails': catch_fails,
             'total_episodes': total_episodes,
             'seed': self.cfg_train['params'].get('seed', ''),
             'headless': getattr(args, 'headless', ''),
@@ -293,3 +316,57 @@ class RunLogger:
                 if fcntl is not None:
                     fcntl.flock(f.fileno(), fcntl.LOCK_UN)
         print(f'[RunLogger] Results saved to {path} (exit_status={row.get("exit_status", "")})')
+
+    @staticmethod
+    def _append_csv_inference(path, columns, row):
+        """Append inference row; rewrite file once if header is missing newer columns."""
+        from io import StringIO
+
+        dir_name = os.path.dirname(os.path.abspath(path))
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
+
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            RunLogger._append_csv(path, columns, row)
+            return
+
+        with open(path, 'r', newline='', encoding='utf-8') as f:
+            first = f.readline()
+            rest = f.read()
+        old_fields = next(csv.reader(StringIO(first)))
+        missing = [c for c in columns if c not in old_fields]
+
+        if not missing:
+            RunLogger._append_csv(path, columns, row)
+            return
+
+        text = first + rest
+        reader = csv.DictReader(StringIO(text))
+        existing_rows = list(reader)
+        for r in existing_rows:
+            for c in columns:
+                if c not in r:
+                    r[c] = ''
+
+        with open(path, 'w', newline='', encoding='utf-8') as f:
+            if fcntl is not None:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                w = csv.DictWriter(f, fieldnames=columns, extrasaction='ignore')
+                w.writeheader()
+                for r in existing_rows:
+                    w.writerow({k: r.get(k, '') for k in columns})
+                w.writerow({k: row.get(k, '') for k in columns})
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+        print(
+            f'[RunLogger] Migrated inference CSV header (+{len(missing)} cols); '
+            f'saved to {path} (exit_status={row.get("exit_status", "")})'
+        )

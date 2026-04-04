@@ -203,11 +203,34 @@ class HRLPlayerDiscrete(common_player_discrete.CommonPlayerDiscrete):
         else:
             print('av reward:', avg_reward, 'av steps:', avg_steps)
 
+        catch_block = {}
+        task = getattr(self.env, "task", None)
+        if task is not None and hasattr(task, "get_catch_stats"):
+            stats = task.get_catch_stats()
+            if stats and stats.get("catch_attempts", 0) > 0:
+                catch_block = {
+                    "catch_success_rate": float(stats["catch_success_rate"]),
+                    "pass_success_rate": float(stats["pass_success_rate"]),
+                    "catch_successes": int(stats["catch_successes"]),
+                    "catch_attempts": int(stats["catch_attempts"]),
+                    "pass_successes": int(stats["pass_successes"]),
+                    "pass_attempts": int(stats["pass_attempts"]),
+                    "catch_fails": int(stats.get("catch_fails", 0)),
+                }
+                print(
+                    "[CatchStats] full_eval"
+                    f" pass={catch_block['pass_successes']}/{catch_block['pass_attempts']}"
+                    f"({catch_block['pass_success_rate']:.4f})"
+                    f" catch={catch_block['catch_successes']}/{catch_block['catch_attempts']}"
+                    f"({catch_block['catch_success_rate']:.4f})"
+                )
+
         self._run_results = {
             'avg_reward': avg_reward,
             'avg_steps': avg_steps,
             'games_played': games_played,
             'sum_rewards': sum_rewards,
+            **catch_block,
         }
         return
 
