@@ -28,7 +28,7 @@ set -euo pipefail
 # ----- Defaults (matching scientific_eval_plan.md) -----
 SEEDS="0 1 2 3 4"
 TEST_EPISODES=500
-GPU=1
+GPU=0
 ALGO="ctde"        # "ctde" or "dual"
 CKPT=""
 LABEL=""
