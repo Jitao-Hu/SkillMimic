@@ -4,6 +4,9 @@ set -euo pipefail
 # ============================================================================
 # Multi-seed inference runner
 #
+# After inference, logs/inference_runs.csv includes full-eval catch/pass rates
+# (see skillmimic/learning/hrl_players_discrete.py) when enableCatchStats is on.
+#
 # Usage examples:
 #
 #   # CTDE checkpoint, 5 seeds, 500 episodes each (defaults):
