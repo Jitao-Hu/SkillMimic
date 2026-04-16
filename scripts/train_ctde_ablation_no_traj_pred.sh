@@ -8,7 +8,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 ITERS="${1:-2000}"
-GPU="${CUDA_VISIBLE_DEVICES:-1}"
+GPU="${CUDA_VISIBLE_DEVICES:-0}"
 EXP="CTDE_NoTrajPred_${ITERS}"
 
 echo "Training ablation to $ITERS epochs as experiment $EXP (GPU=$GPU)"
