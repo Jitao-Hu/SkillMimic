@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Re-run scientific-eval style inference for the "no trajectory predictor" CTDE
-# ablation checkpoint trained 5000 epochs (500 episodes × seeds 0–4) so logs/inference_runs.csv picks
+# ablation checkpoint trained 8000 epochs (500 episodes × seeds 0–4) so logs/inference_runs.csv picks
 # up catch/pass secondary metrics from the player.
 #
 # Run from repository root. Requires GPU + Isaac Gym (same as training).
@@ -12,12 +12,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-GPU="${CUDA_VISIBLE_DEVICES:-0}"
+GPU="${CUDA_VISIBLE_DEVICES:-1}"
 SEEDS="${SEEDS:-0 1 2 3 4}"
 EPISODES="${EPISODES:-500}"
 HEADLESS="${HEADLESS:-1}" # 1=headless, 0=render
 
-ABLATE_CKPT="${ABLATE_CKPT:-output/CTDE_NoTrajPred_5000_20260415-13-42-46/nn/CTDE_NoTrajPred_5000.pth}"
+ABLATE_CKPT="${ABLATE_CKPT:-output/CTDE_NoTrajPred_8000_20260415-17-44-57/nn/CTDE_NoTrajPred_8000.pth}"
 
 TASK="HRLCTDEHumanoid"
 CFG_ENV="skillmimic/data/cfg/hrl_ctde_humanoid.yaml"

@@ -3,3 +3,13 @@ tmux
 tmux attach-session -t skillmimic_training
 tmux rename-session -t skillmimic_training ctde_training
 tmux new -s
+
+python skillmimic/utils/make_video.py \
+  --image_path skillmimic/data/images/20260416_141236_baseline_ctde2000 \
+  --fps 60
+
+python skillmimic/utils/make_video.py \
+  --image_path skillmimic/data/images/20260416_150740_no_traj_pred_ctde2000 \
+  --fps 60
+
+GPU=0 SEED=24 EPISODES=50 bash scripts/run_inference_save_images_ctde2000_ablation.sh
